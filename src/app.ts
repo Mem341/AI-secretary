@@ -174,6 +174,7 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
 
 const BOT_COMMANDS = [
   { command: "new", description: "Нова зустріч" },
+  { command: "mail", description: "Пошта Gmail" },
   { command: "contacts", description: "Адресна книга" },
   { command: "settings", description: "Профіль і календар" },
   { command: "cancel", description: "Скасувати поточну дію" },
@@ -186,6 +187,8 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
   const me = await tg.call<{ username: string }>("getMe", {});
   const url = `${env.PUBLIC_URL}/api/telegram`;
   const info = await tg.call<{ url: string }>("getWebhookInfo", {});
+  // The command menu is refreshed every time, so an updated deployment shows new commands.
+  await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   // The secret cannot be read back, so the webhook is (re)registered whenever the URL differs.
   if (info.url === url) return { username: me.username, changed: false };
   await tg.call("setWebhook", {
@@ -194,7 +197,6 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
     allowed_updates: ["message", "callback_query"],
     drop_pending_updates: true,
   });
-  await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   return { username: me.username, changed: true };
 }
 

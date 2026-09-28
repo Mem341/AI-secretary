@@ -29,6 +29,7 @@ import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
 import { createZoomMeeting } from "../zoom/client";
 import { startActionDraft } from "./actions";
+import { looksLikeMailRequest, startMailDraft } from "./mail";
 import {
   attendeesWithoutEmail,
   buildEventBody,
@@ -67,8 +68,9 @@ async function requireCalendar(env: Env, user: User, chatId: number): Promise<bo
 /**
  * Owner's free text (typed or transcribed) — the router for every kind of draft. In order: continue whatever
  * draft they are replying to or were last asked to complete (a meeting card, an action on an existing meeting,
- * a Gmail action); otherwise, a reply to a message about a specific meeting starts a new action on it
- * (reschedule/cancel/note/attendees); otherwise, it is a new meeting request (the original, default behavior).
+ * a Gmail action); otherwise, a reply to a message about a specific meeting or email starts a new action on it;
+ * otherwise, mail words ("лист", "пошта", "email"…) route to Gmail; otherwise, it is a new meeting request (the
+ * original, default behavior).
  */
 export async function handleOwnerText(
   env: Env,
@@ -83,12 +85,13 @@ export async function handleOwnerText(
     (replyToMessageId ? await findDraftByMessage(env.db, user.id, replyToMessageId) : null) ??
     (await findInputDraft(env.db, user.id));
 
-  if (target?.kind === "action") {
+  // Actions on a meeting and Gmail actions are single-shot: a follow-up is re-classified with the whole text.
+  if (target?.kind === "action" || target?.kind === "mail") {
     if (target.state === "pending") {
       await appendSource(env.db, target.id, text, true);
       if (await transition(env.db, target.id, ["pending"], "parsing")) {
         await tg.typing(chatId);
-        await env.jobs.send({ type: "action_parse", draftId: target.id });
+        await env.jobs.send({ type: target.kind === "action" ? "action_parse" : "mail_parse", draftId: target.id });
       }
     }
     return;
@@ -117,6 +120,15 @@ export async function handleOwnerText(
       await startActionDraft(env, user, chatId, link.ref_id, text);
       return;
     }
+    if (link?.ref_type === "mail") {
+      await startMailDraft(env, user, chatId, text, link.ref_id);
+      return;
+    }
+  }
+
+  if (looksLikeMailRequest(text)) {
+    await startMailDraft(env, user, chatId, text);
+    return;
   }
 
   if (!(await requireCalendar(env, user, chatId))) return;

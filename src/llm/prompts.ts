@@ -136,3 +136,48 @@ export function actionSystemPrompt(meeting: { title: string | null; start_at: nu
     .filter(Boolean)
     .join("\n");
 }
+
+const MAIL_SCHEMA = `{
+  "action": "search" | "send" | "reply" | "draft" | "archive" | "mark_read" | "label" | "trash" | "unclear",
+  "query": string | null,
+  "to": [{"name": string | null, "email": string | null}],
+  "subject": string | null,
+  "body": string | null,
+  "label": string | null,
+  "clarify_question": string | null
+}`;
+
+/**
+ * System prompt for a Gmail request (the n8n "Gmail Agent"). `target` is the email the owner replied to, when
+ * there is one — then "reply", "archive", "mark_read", "label", "trash" apply to it.
+ */
+export function mailSystemPrompt(
+  owner: User,
+  directory: DirectoryEntry[],
+  target: { from: string; subject: string; body: string } | null,
+  now: Date,
+): string {
+  return [
+    "Ти — AI-секретар керівника, який працює з його поштою Gmail. Визнач, що він хоче зробити.",
+    "",
+    `Зараз: ${describeNow(now)}.`,
+    `Керівник: ${owner.full_name ?? "невідомо"}${owner.position ? `, ${owner.position}` : ""}${owner.email ? `, ${owner.email}` : ""}.`,
+    directoryBlock(directory),
+    target
+      ? `\nКерівник відповідає на ЛИСТ:\nВід: ${target.from}\nТема: ${target.subject}\nТекст:\n${target.body.slice(0, 4000)}`
+      : "\nКонкретного листа не вибрано.",
+    "",
+    `Схема відповіді:\n${MAIL_SCHEMA}`,
+    "",
+    `Правила:
+- Відповідай ЛИШЕ JSON-обʼєктом за схемою, нічого не вигадуй.
+- "search": показати листи — "query" у синтаксисі пошуку Gmail («is:unread», «from:ivan@x.com», «subject:бюджет»,
+  «newer_than:2d»); «перевір пошту», «що нового» → "is:unread in:inbox".
+- "send": новий лист — "to" (email лише з тексту або адресної книги), "subject", "body" від імені керівника.
+- "reply": відповідь на вибраний лист — "body" текст відповіді від імені керівника (ввічливо, коротко, мовою листа).
+- "draft": те саме, що "send", але лише зберегти чернетку.
+- "archive" / "mark_read" / "trash": дія з вибраним листом. "label": додати мітку "label" до вибраного листа.
+- Якщо потрібен вибраний лист, а його немає, або бракує адресата чи змісту — "unclear" і коротке питання
+  українською в "clarify_question".`,
+  ].join("\n");
+}

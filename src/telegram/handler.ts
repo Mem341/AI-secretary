@@ -1,4 +1,5 @@
 import { handleActionCallback } from "../bot/actions";
+import { handleMailCallback, handleMailQuickAction, startMailDraft } from "../bot/mail";
 import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE_S, PHOTO_DEBOUNCE_S, photoLine } from "../bot/meetings";
 import {
   handleDialogCallback,
@@ -153,6 +154,18 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
       }
       await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.");
       return;
+    case "/mail": {
+      const request = args.join(" ").trim();
+      if (!request) {
+        await tg.send(
+          user.tg_id,
+          "Що зробити з поштою? Напишіть, напр.: <code>/mail перевір нові листи</code> або <code>/mail напиши Івану, що зустріч переносимо</code>.",
+        );
+        return;
+      }
+      await startMailDraft(env, user, msg.chat.id, request);
+      return;
+    }
     case "/contacts": {
       const contacts = await listContacts(env.db, 100);
       await tg.send(
@@ -203,6 +216,8 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   try {
     if (kind === "d") toast = await handleCardCallback(env, user, a, b);
     else if (kind === "a") toast = await handleActionCallback(env, user, a, b);
+    else if (kind === "m") toast = await handleMailCallback(env, user, a, b);
+    else if (kind === "g") toast = await handleMailQuickAction(env, user, a, b);
     else if (kind === "o") toast = await handleDialogCallback(env, user, a, b);
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);
