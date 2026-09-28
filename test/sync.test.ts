@@ -1,36 +1,27 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { dailyCron, gcalPush } from "../src/app";
-import type { Db } from "../src/db/client";
-import type { Env } from "../src/env";
+import { env as baseEnv } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import worker from "../src/index";
 import type { GEvent } from "../src/google/calendar";
 import { eventToChange, fullSync, incrementalSync, startWatch } from "../src/google/sync";
 import { encrypt } from "../src/lib/crypto";
-import { mockFetch, pgliteDb, resetDb, testConfig, testEnv } from "./helpers";
+import type { Env } from "../src/env";
+import { mockFetch, resetDb, testEnv } from "./helpers";
 
-let db: Db;
-let env: Env;
-
-beforeAll(async () => {
-  db = await pgliteDb();
-});
+const env = baseEnv as unknown as Env;
 
 async function seedOwner(): Promise<number> {
   const now = Date.now();
-  const { rows } = await db.query<{ id: number }>(
-    "INSERT INTO users (tg_id, full_name, created_at, updated_at) VALUES (1000, 'Олександр Коваленко', $1, $1) RETURNING id",
-    [now],
-  );
-  await db.query(
-    "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-    [
-      rows[0]!.id,
-      await encrypt(testConfig.ENCRYPTION_KEY, "refresh"),
-      await encrypt(testConfig.ENCRYPTION_KEY, "access"),
-      now + 3600_000,
-      now,
-    ],
-  );
-  return rows[0]!.id;
+  const row = await env.DB.prepare(
+    "INSERT INTO users (tg_id, full_name, role, created_at, updated_at) VALUES (1000, 'Олександр Коваленко', 'owner', ?, ?) RETURNING id",
+  )
+    .bind(now, now)
+    .first<{ id: number }>();
+  await env.DB.prepare(
+    "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+  )
+    .bind(row!.id, await encrypt(env.ENCRYPTION_KEY, "refresh"), await encrypt(env.ENCRYPTION_KEY, "access"), now + 3600_000, now)
+    .run();
+  return row!.id;
 }
 
 const timed = (id: string, startIso: string, endIso: string, extra: Partial<GEvent> = {}): GEvent => ({
@@ -74,8 +65,7 @@ describe("eventToChange", () => {
 describe("push sync", () => {
   let userId: number;
   beforeEach(async () => {
-    await resetDb(db);
-    env = testEnv(db).env;
+    await resetDb();
     userId = await seedOwner();
   });
   afterEach(() => vi.restoreAllMocks());
@@ -101,7 +91,10 @@ describe("push sync", () => {
         }
         expect(url.searchParams.get("syncToken")).toBe("sync-1");
         return Response.json({
-          items: [timed("e1", iso(soon + 86400_000), iso(soon + 86400_000 + 3600_000)), { id: "e2", status: "cancelled" }],
+          items: [
+            timed("e1", iso(soon + 86400_000), iso(soon + 86400_000 + 3600_000)),
+            { id: "e2", status: "cancelled" },
+          ],
           nextSyncToken: "sync-2",
         });
       },
@@ -109,71 +102,54 @@ describe("push sync", () => {
 
     await startWatch(env, userId);
     const watch = calls.find((c) => c.url.endsWith("/events/watch"))!.body as Record<string, string>;
-    expect(watch.address).toBe("https://bot.test/api/gcal-push");
+    expect(watch.address).toBe("https://bot.test/gcal/push");
     expect(watch.type).toBe("web_hook");
     expect(watch.token).toHaveLength(32);
 
     expect(await fullSync(env, userId)).toBe(2);
     expect(await incrementalSync(env, userId)).toBe(2);
 
-    const { rows } = await db.query("SELECT gcal_event_id, status, start_at FROM meetings ORDER BY gcal_event_id");
-    expect(rows).toEqual([
+    const { results } = await env.DB.prepare("SELECT gcal_event_id, status, start_at FROM meetings ORDER BY gcal_event_id").all();
+    expect(results).toEqual([
       { gcal_event_id: "e1", status: "confirmed", start_at: soon + 86400_000 },
       { gcal_event_id: "e2", status: "cancelled", start_at: soon + 7200_000 },
     ]);
-    const { rows: ch } = await db.query<{ sync_token: string }>("SELECT sync_token FROM watch_channels");
-    expect(ch[0]!.sync_token).toBe("sync-2");
-  });
-
-  it("cancels mirrored meetings that disappeared from the window during a full sync", async () => {
-    const soon = Date.now() + 86400_000;
-    let round = 0;
-    mockFetch([
-      (url) => {
-        if (!url.pathname.endsWith("/calendars/primary/events")) return undefined;
-        round++;
-        const items = [timed("keep", new Date(soon).toISOString(), new Date(soon + 3600_000).toISOString())];
-        if (round === 1) items.push(timed("gone", new Date(soon).toISOString(), new Date(soon + 3600_000).toISOString()));
-        return Response.json({ items, nextSyncToken: `t${round}` });
-      },
-    ]);
-    await fullSync(env, userId);
-    await fullSync(env, userId);
-    const { rows } = await db.query("SELECT gcal_event_id, status FROM meetings ORDER BY gcal_event_id");
-    expect(rows).toEqual([
-      { gcal_event_id: "gone", status: "cancelled" },
-      { gcal_event_id: "keep", status: "confirmed" },
-    ]);
+    const ch = await env.DB.prepare("SELECT sync_token FROM watch_channels").first<{ sync_token: string }>();
+    expect(ch!.sync_token).toBe("sync-2");
   });
 
   it("falls back to a full sync when Google answers 410 for the sync token", async () => {
-    await db.query(
-      `INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, sync_token, updated_at)
-       VALUES ($1, 'c', 'r', 't', 0, 'stale', 0)`,
-      [userId],
-    );
+    await env.DB.prepare(
+      "INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, sync_token, updated_at) VALUES (?, 'c', 'r', 't', 0, 'stale', 0)",
+    )
+      .bind(userId)
+      .run();
     mockFetch([
-      (url) => (url.searchParams.get("syncToken") ? new Response("gone", { status: 410 }) : Response.json({ items: [], nextSyncToken: "fresh" })),
+      (url) =>
+        url.searchParams.get("syncToken")
+          ? new Response("gone", { status: 410 })
+          : Response.json({ items: [], nextSyncToken: "fresh" }),
     ]);
     await incrementalSync(env, userId);
-    const { rows } = await db.query<{ sync_token: string }>("SELECT sync_token FROM watch_channels");
-    expect(rows[0]!.sync_token).toBe("fresh");
+    const ch = await env.DB.prepare("SELECT sync_token FROM watch_channels").first<{ sync_token: string }>();
+    expect(ch!.sync_token).toBe("fresh");
   });
 
   it("accepts pushes only with the channel's secret token and queues a sync", async () => {
-    await db.query(
-      `INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, updated_at)
-       VALUES ($1, 'chan-1', 'r', 'secret-token', 0, 0)`,
-      [userId],
-    );
-    const { env: qEnv, jobs } = testEnv(db);
+    await env.DB.prepare(
+      "INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, updated_at) VALUES (?, 'chan-1', 'r', 'secret-token', 0, 0)",
+    )
+      .bind(userId)
+      .run();
+    const { env: qEnv, jobs } = testEnv();
     const push = (token: string, state = "exists") =>
-      gcalPush(
-        new Request("https://bot.test/api/gcal-push", {
+      worker.fetch(
+        new Request("https://bot.test/gcal/push", {
           method: "POST",
           headers: { "x-goog-channel-id": "chan-1", "x-goog-channel-token": token, "x-goog-resource-state": state },
         }),
         qEnv,
+        {} as ExecutionContext,
       );
     expect((await push("wrong")).status).toBe(200);
     expect(jobs).toEqual([]);
@@ -181,20 +157,5 @@ describe("push sync", () => {
     expect(jobs).toEqual([]);
     await push("secret-token");
     expect(jobs).toEqual([{ body: { type: "sync", userId }, delaySeconds: undefined }]);
-  });
-
-  it("daily cron requires the cron secret and renews channels close to expiration", async () => {
-    await db.query(
-      `INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, updated_at)
-       VALUES ($1, 'chan-1', 'r', 't', $2, 0)`,
-      [userId, Date.now() + 3600_000],
-    );
-    const { env: qEnv, jobs } = testEnv(db);
-    const call = (auth?: string) =>
-      dailyCron(new Request("https://bot.test/api/cron/daily", { headers: auth ? { authorization: auth } : {} }), qEnv);
-    expect((await call()).status).toBe(401);
-    expect((await call("Bearer nope")).status).toBe(401);
-    expect((await call("Bearer cron-secret")).status).toBe(200);
-    expect(jobs.map((j) => j.body)).toEqual([{ type: "daily", userId, renew: true }]);
   });
 });

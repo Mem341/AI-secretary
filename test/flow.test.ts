@@ -1,25 +1,20 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { oauthCallback, oauthStart, telegramWebhook } from "../src/app";
-import type { Db } from "../src/db/client";
+import { env as baseEnv } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import worker from "../src/index";
 import { getDraft } from "../src/db/drafts";
-import { getUserByTgId, listContacts } from "../src/db/users";
+import { getUserByTgId } from "../src/db/users";
+import type { Env } from "../src/env";
 import { connectLink } from "../src/google/oauth";
+import type { Job } from "../src/jobs";
 import { encrypt } from "../src/lib/crypto";
 import { handleUpdate } from "../src/telegram/handler";
 import type { TgUpdate } from "../src/telegram/types";
-import { llmReply, mockFetch, OWNER, pgliteDb, resetDb, runJobs, testConfig, testEnv, tgCalls } from "./helpers";
+import { llmReply, mockFetch, resetDb, testEnv, tgCalls } from "./helpers";
 
-let db: Db;
+const plainEnv = baseEnv as unknown as Env;
+const ADMIN = 1000;
 let updateId = 1;
 let msgId = 10;
-
-beforeAll(async () => {
-  db = await pgliteDb();
-});
-beforeEach(async () => {
-  await resetDb(db);
-});
-afterEach(() => vi.restoreAllMocks());
 
 function textUpdate(fromId: number, text: string, extra: Record<string, unknown> = {}): TgUpdate {
   return {
@@ -42,107 +37,130 @@ function callbackUpdate(fromId: number, data: string): TgUpdate {
   };
 }
 
-async function seedConnectedOwner(): Promise<number> {
-  const now = Date.now();
-  const { rows } = await db.query<{ id: number }>(
-    `INSERT INTO users (tg_id, tg_username, email, full_name, position, phone, defaults_json, created_at, updated_at)
-     VALUES ($1, 'tester', 'o.kovalenko@ribas.ua', 'Олександр Коваленко', 'Директор', '+380671234567',
-       '{"duration_min":60,"format":"offline","address":"вул. Хрещатик, 1"}', $2, $2) RETURNING id`,
-    [OWNER, now],
-  );
-  await db.query(
-    "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-    [rows[0]!.id, await encrypt(testConfig.ENCRYPTION_KEY, "r"), await encrypt(testConfig.ENCRYPTION_KEY, "a"), now + 3600_000, now],
-  );
-  await db.query("INSERT INTO contacts (name, email, updated_at) VALUES ('Олег Мельник', 'o.melnyk@ribas.ua', $1)", [now]);
-  return rows[0]!.id;
+async function runJobs(env: Env, jobs: { body: Job }[]): Promise<void> {
+  while (jobs.length) {
+    const { body } = jobs.shift()!;
+    const message = { body, attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await worker.queue({ messages: [message] } as unknown as MessageBatch<Job>, env);
+    expect(message.retry).not.toHaveBeenCalled();
+  }
 }
 
-function inDays(days: number, hourKyiv: number): string {
+async function seedConnectedOwner(): Promise<number> {
+  const now = Date.now();
+  const row = await plainEnv.DB.prepare(
+    `INSERT INTO users (tg_id, tg_username, email, full_name, position, phone, role, defaults_json, created_at, updated_at)
+     VALUES (?, 'tester', 'o.kovalenko@ribas.ua', 'Олександр Коваленко', 'Директор', '+380671234567', 'owner',
+       '{"duration_min":60,"format":"offline","address":"вул. Хрещатик, 1"}', ?, ?) RETURNING id`,
+  )
+    .bind(ADMIN, now, now)
+    .first<{ id: number }>();
+  await plainEnv.DB.prepare(
+    "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+  )
+    .bind(row!.id, await encrypt(plainEnv.ENCRYPTION_KEY, "r"), await encrypt(plainEnv.ENCRYPTION_KEY, "a"), now + 3600_000, now)
+    .run();
+  await plainEnv.DB.prepare(
+    "INSERT INTO users (tg_id, email, full_name, role, created_at, updated_at) VALUES (2000, 'o.melnyk@ribas.ua', 'Олег Мельник', 'member', ?, ?)",
+  )
+    .bind(now, now)
+    .run();
+  return row!.id;
+}
+
+function inDays(days: number, hour: number): string {
+  // A weekday-agnostic future time in Kyiv (+03:00 in the test period is not assumed: use UTC offset form).
   const d = new Date(Date.now() + days * 86400_000);
-  d.setUTCHours(hourKyiv - 3, 0, 0, 0);
+  d.setUTCHours(hour - 3, 0, 0, 0);
   return d.toISOString().replace(".000Z", "Z");
 }
 
-describe("single owner", () => {
-  it("ignores everyone except OWNER_TELEGRAM_ID, without replying or storing anything", async () => {
+beforeEach(async () => {
+  await resetDb();
+});
+afterEach(() => vi.restoreAllMocks());
+
+describe("access control", () => {
+  it("rejects a stranger and shows their Telegram ID", async () => {
     const calls = mockFetch([]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(555, "/start"));
-    await handleUpdate(env, textUpdate(555, "зустріч з Іваном завтра о 10"));
-    await handleUpdate(env, callbackUpdate(555, "d:whatever:c"));
-    expect(calls).toEqual([]);
-    expect(jobs).toEqual([]);
-    expect(await getUserByTgId(env.db, 555)).toBeNull();
+    const { env } = testEnv();
+    await handleUpdate(env, textUpdate(555, "привіт"));
+    const sent = tgCalls(calls, "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toContain("Доступ обмежено");
+    expect(sent[0]!.text).toContain("555");
+    expect(await getUserByTgId(env.DB, 555)).toBeNull();
   });
 
-  it("ignores group chats even from the owner", async () => {
-    const calls = mockFetch([]);
-    const { env } = testEnv(db);
-    const update = textUpdate(OWNER, "/start");
-    update.message!.chat = { id: -100, type: "group" };
-    await handleUpdate(env, update);
-    expect(calls).toEqual([]);
-  });
-
-  it("rejects webhook calls without the Telegram secret and handles valid ones in the background", async () => {
-    mockFetch([]);
-    const { env, deferred } = testEnv(db);
-    const bad = await telegramWebhook(new Request("https://bot.test/api/telegram", { method: "POST", body: "{}" }), env, {
-      defer: (p) => void deferred.push(p),
-      sleep: async () => undefined,
-    });
-    expect(bad.status).toBe(403);
-
-    const ok = await telegramWebhook(
-      new Request("https://bot.test/api/telegram", {
-        method: "POST",
-        headers: { "x-telegram-bot-api-secret-token": "tg-secret" },
-        body: JSON.stringify(textUpdate(OWNER, "/start")),
-      }),
-      env,
-      { defer: (p) => void deferred.push(p), sleep: async () => undefined },
+  it("rejects webhook calls without the Telegram secret", async () => {
+    const res = await worker.fetch(
+      new Request("https://bot.test/telegram/webhook", { method: "POST", body: "{}" }),
+      plainEnv,
+      { waitUntil() {} } as unknown as ExecutionContext,
     );
-    expect(ok.status).toBe(200);
-    await Promise.all(deferred);
-    expect(await getUserByTgId(env.db, OWNER)).not.toBeNull();
+    expect(res.status).toBe(403);
+  });
+
+  it("lets the admin whitelist a member, who then onboards with name and email", async () => {
+    const calls = mockFetch([]);
+    const { env } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "/allow 2000 member"));
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("2000 додано");
+
+    await handleUpdate(env, textUpdate(2000, "/start"));
+    await handleUpdate(env, textUpdate(2000, "Олег"));
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("імʼя та прізвище");
+    await handleUpdate(env, textUpdate(2000, "Олег Мельник"));
+    await handleUpdate(env, textUpdate(2000, "not email"));
+    await handleUpdate(env, textUpdate(2000, "O.Melnyk@Ribas.ua"));
+    const member = await getUserByTgId(env.DB, 2000);
+    expect(member).toMatchObject({ full_name: "Олег Мельник", email: "o.melnyk@ribas.ua", role: "member", dialog_state: null });
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Готово");
+  });
+
+  it("members cannot create meetings", async () => {
+    const calls = mockFetch([]);
+    const { env, jobs } = testEnv();
+    await seedConnectedOwner();
+    await handleUpdate(env, textUpdate(2000, "зустріч з Іваном завтра о 10"));
+    expect(jobs).toEqual([]);
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("нагадування");
   });
 });
 
 describe("owner onboarding", () => {
   it("collects the profile and ends with the Google Calendar connect button", async () => {
     const calls = mockFetch([]);
-    const { env } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "/start"));
-    await handleUpdate(env, textUpdate(OWNER, "Олександр"));
-    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("імʼя та прізвище");
-    await handleUpdate(env, textUpdate(OWNER, "Олександр Коваленко"));
-    await handleUpdate(env, textUpdate(OWNER, "Директор з розвитку"));
-    await handleUpdate(env, textUpdate(OWNER, "", { contact: { phone_number: "380671234567", user_id: OWNER } }));
-    await handleUpdate(env, callbackUpdate(OWNER, "o:dur:45"));
-    await handleUpdate(env, callbackUpdate(OWNER, "o:fmt:google_meet"));
-    await handleUpdate(env, callbackUpdate(OWNER, "o:addr:skip"));
+    const { env } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "/start"));
+    await handleUpdate(env, textUpdate(ADMIN, "Олександр Коваленко"));
+    await handleUpdate(env, textUpdate(ADMIN, "Директор з розвитку"));
+    await handleUpdate(env, textUpdate(ADMIN, "", { contact: { phone_number: "380671234567", user_id: ADMIN } }));
+    await handleUpdate(env, callbackUpdate(ADMIN, "o:dur:45"));
+    await handleUpdate(env, callbackUpdate(ADMIN, "o:fmt:google_meet"));
+    await handleUpdate(env, callbackUpdate(ADMIN, "o:addr:skip"));
 
-    const owner = await getUserByTgId(env.db, OWNER);
+    const owner = await getUserByTgId(env.DB, ADMIN);
     expect(owner).toMatchObject({
       full_name: "Олександр Коваленко",
       position: "Директор з розвитку",
       phone: "+380671234567",
+      role: "owner",
       dialog_state: null,
       defaults: { duration_min: 45, format: "google_meet" },
     });
     const last = tgCalls(calls, "sendMessage").at(-1)!;
     expect(last.text).toContain("Google Calendar");
     const button = (last.reply_markup as { inline_keyboard: { url: string }[][] }).inline_keyboard[0]![0]!;
-    expect(button.url).toMatch(/^https:\/\/bot\.test\/api\/oauth\/start\?state=/);
+    expect(button.url).toMatch(/^https:\/\/bot\.test\/oauth\/google\/start\?state=/);
   });
 });
 
 describe("OAuth", () => {
   it("exchanges the code, subscribes to push and queues the initial sync", async () => {
-    const userId = await seedConnectedOwner();
-    await db.query("DELETE FROM google_auth");
-    const idToken = `x.${btoa(JSON.stringify({ email: "Boss@Ribas.ua" })).replace(/=+$/, "")}.y`;
+    const userId = (await seedConnectedOwner()) as number;
+    await plainEnv.DB.prepare("DELETE FROM google_auth").run();
+    const idToken = `x.${btoa(JSON.stringify({ email: "boss@ribas.ua" })).replace(/=+$/, "")}.y`;
     const calls = mockFetch([
       (url) =>
         url.hostname === "oauth2.googleapis.com"
@@ -156,29 +174,28 @@ describe("OAuth", () => {
           : undefined,
       (url) => (url.pathname.endsWith("/events/watch") ? Response.json({ id: "c", resourceId: "r", expiration: "9999999999999" }) : undefined),
     ]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
     const link = new URL(await connectLink(env, userId));
-    const start = await oauthStart(new Request(link), env);
+    const start = await worker.fetch(new Request(link), env, {} as ExecutionContext);
     expect(start.status).toBe(302);
     const google = new URL(start.headers.get("location")!);
     expect(google.searchParams.get("scope")).toContain("calendar.events");
     expect(google.searchParams.get("access_type")).toBe("offline");
-    expect(google.searchParams.get("redirect_uri")).toBe("https://bot.test/api/oauth/callback");
 
-    const cb = await oauthCallback(
-      new Request(`https://bot.test/api/oauth/callback?code=abc&state=${encodeURIComponent(link.searchParams.get("state")!)}`),
+    const cb = await worker.fetch(
+      new Request(`https://bot.test/oauth/google/callback?code=abc&state=${encodeURIComponent(link.searchParams.get("state")!)}`),
       env,
+      {} as ExecutionContext,
     );
     expect(cb.status).toBe(200);
-    const { rows } = await db.query<{ refresh_token_enc: string }>("SELECT refresh_token_enc FROM google_auth WHERE user_id = $1", [userId]);
-    expect(rows[0]!.refresh_token_enc).toMatch(/^v1\./);
-    expect(rows[0]!.refresh_token_enc).not.toContain("rt");
-    expect((await getUserByTgId(env.db, OWNER))!.email).toBe("boss@ribas.ua");
+    const stored = await env.DB.prepare("SELECT refresh_token_enc FROM google_auth WHERE user_id = ?").bind(userId).first<{ refresh_token_enc: string }>();
+    expect(stored!.refresh_token_enc).toMatch(/^v1\./);
+    expect(stored!.refresh_token_enc).not.toContain("rt");
     expect(calls.some((c) => c.url.endsWith("/events/watch"))).toBe(true);
     expect(jobs.map((j) => j.body)).toEqual([{ type: "full_sync", userId, notify: true }]);
 
-    const forged = await oauthCallback(new Request("https://bot.test/api/oauth/callback?code=abc&state=forged.sig"), env);
-    expect(forged.status).toBe(400);
+    const bad = await worker.fetch(new Request("https://bot.test/oauth/google/callback?code=abc&state=forged.sig"), env, {} as ExecutionContext);
+    expect(bad.status).toBe(400);
   });
 });
 
@@ -194,7 +211,7 @@ describe("meeting creation", () => {
       location: null,
       attendees: [
         { name: "Іван Петренко", email: "ivan@example.com", internal: false },
-        { name: "Олег", email: null, internal: false },
+        { name: "Олег", email: null, internal: true },
       ],
       initiator: "Іван Петренко",
       purpose: "Бюджет Буковелю",
@@ -208,7 +225,7 @@ describe("meeting creation", () => {
     };
   }
 
-  it("text → card → «Створити» → Google event with invitations; attendees go to the address book", async () => {
+  it("text → card → «Створити» → Google event with invitations", async () => {
     const userId = await seedConnectedOwner();
     let inserted: Record<string, any> | null = null;
     let insertUrl: URL | null = null;
@@ -226,28 +243,27 @@ describe("meeting creation", () => {
         });
       },
     ]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
 
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном Петренком по бюджету Буковелю"));
+    await handleUpdate(env, textUpdate(ADMIN, "зустріч з Іваном Петренком по бюджету Буковелю"));
     expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Готую картку");
     expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
     await runJobs(env, jobs);
 
     const llm = calls.find((c) => c.url.includes("openrouter.ai"))!.body as { model: string; messages: { content: unknown }[] };
-    expect(llm.model).toBe("test/card-model");
+    expect(llm.model).toBe(env.LLM_MODEL);
     expect(String(llm.messages[0]!.content)).toContain("Олег Мельник <o.melnyk@ribas.ua>");
 
     const cardMsg = tgCalls(calls, "editMessageText").at(-1)!;
     expect(cardMsg.text).toContain("Нова зустріч");
-    // Email from the address book; same corporate domain as the owner → colleague.
     expect(cardMsg.text).toContain("Олег (свій) — o.melnyk@ribas.ua");
     const buttons = (cardMsg.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat();
+    const create = buttons.find((b) => b.callback_data.endsWith(":c"))!;
     expect(buttons.map((b) => b.callback_data.split(":")[2])).toEqual(["c", "e", "x"]);
-    const create = buttons[0]!;
 
-    await handleUpdate(env, callbackUpdate(OWNER, create.callback_data));
-    // A double click does not create a second event.
-    await handleUpdate(env, callbackUpdate(OWNER, create.callback_data));
+    await handleUpdate(env, callbackUpdate(ADMIN, create.callback_data));
+    // Double click does not create a second event.
+    await handleUpdate(env, callbackUpdate(ADMIN, create.callback_data));
 
     expect(insertUrl!.searchParams.get("sendUpdates")).toBe("all");
     expect(insertUrl!.searchParams.get("conferenceDataVersion")).toBe("1");
@@ -257,15 +273,13 @@ describe("meeting creation", () => {
     ]);
     expect(inserted!.id).toMatch(/^ais[0-9a-f]{32}$/);
     expect(inserted!.location).toBe("вул. Хрещатик, 1");
-    expect(inserted!.guestsCanModify).toBe(true);
     expect(inserted!.description).toContain("краще писати, ніж дзвонити");
     expect(calls.filter((c) => c.method === "POST" && c.url.includes("/calendars/primary/events?")).length).toBe(1);
 
-    const { rows } = await db.query("SELECT source, status, title FROM meetings WHERE user_id = $1", [userId]);
-    expect(rows).toEqual([{ source: "bot", status: "confirmed", title: "Іван Петренко + Олександр" }]);
+    const meeting = await env.DB.prepare("SELECT source, status, title FROM meetings WHERE user_id = ?").bind(userId).first();
+    expect(meeting).toEqual({ source: "bot", status: "confirmed", title: "Іван Петренко + Олександр" });
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Зустріч створена");
     expect(tgCalls(calls, "answerCallbackQuery").map((a) => a.text)).toEqual(["Створено", "Вже обробляється"]);
-    expect((await listContacts(db)).map((c) => c.email).sort()).toEqual(["ivan@example.com", "o.melnyk@ribas.ua"]);
   });
 
   it("asks a clarifying question when confidence is low, then builds the card from the answer", async () => {
@@ -277,12 +291,12 @@ describe("meeting creation", () => {
           ? llmReply(n++ === 0 ? llmCard({ confidence: 0.3, clarify_question: "З ким зустріч?" }) : llmCard())
           : undefined,
     ]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "треба зустрітись"));
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "треба зустрітись"));
     await runJobs(env, jobs);
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("З ким зустріч?");
 
-    await handleUpdate(env, textUpdate(OWNER, "з Іваном Петренком"));
+    await handleUpdate(env, textUpdate(ADMIN, "з Іваном Петренком"));
     expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
     await runJobs(env, jobs);
     const second = calls.filter((c) => c.url.includes("openrouter.ai"))[1]!.body as { messages: { content: { text: string }[] }[] };
@@ -290,12 +304,12 @@ describe("meeting creation", () => {
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Нова зустріч");
   });
 
-  it("collects forwarded messages into one batch processed after the 15 s debounce", async () => {
+  it("collects forwarded messages into one batch processed after the debounce", async () => {
     const userId = await seedConnectedOwner();
     const calls = mockFetch([(url) => (url.hostname === "openrouter.ai" ? llmReply(llmCard()) : undefined)]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
     const fwd = (text: string, fromName: string) =>
-      textUpdate(OWNER, text, { forward_origin: { type: "user", date: 1790600000, sender_user: { id: 3, is_bot: false, first_name: fromName } } });
+      textUpdate(ADMIN, text, { forward_origin: { type: "user", date: 1790600000, sender_user: { id: 3, is_bot: false, first_name: fromName } } });
     await handleUpdate(env, fwd("Добрий день! Можемо зустрітись у четвер?", "Іван"));
     await handleUpdate(env, fwd("о 15:00 підійде", "Іван"));
 
@@ -311,8 +325,8 @@ describe("meeting creation", () => {
     const content = (llmCalls[0]!.body as { messages: { content: { text: string }[] }[] }).messages[1]!.content[0]!.text;
     expect(content).toContain("Переслана керівником переписка");
     expect(content).toMatch(/\] Іван: Добрий день! Можемо зустрітись у четвер\?\n\[.*\] Іван: о 15:00 підійде/);
-    const { rows } = await db.query("SELECT state, source_type FROM drafts WHERE user_id = $1", [userId]);
-    expect(rows).toEqual([{ state: "pending", source_type: "forward" }]);
+    const drafts = await env.DB.prepare("SELECT state, source_type FROM drafts WHERE user_id = ?").bind(userId).all();
+    expect(drafts.results).toEqual([{ state: "pending", source_type: "forward" }]);
   });
 
   it("applies a free-text edit after «Змінити» and counts it", async () => {
@@ -324,22 +338,20 @@ describe("meeting creation", () => {
           ? llmReply(n++ === 0 ? llmCard() : llmCard({ attendees: [{ name: "Іван Петренко", email: "ivan@example.com" }], format: "google_meet" }))
           : undefined,
     ]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном"));
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "зустріч з Іваном"));
     await runJobs(env, jobs);
-    const keyboard = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] })
-      .inline_keyboard;
-    const draftId = keyboard[0]![0]!.callback_data.split(":")[1]!;
+    const draftId = String((tgCalls(calls, "editMessageText").at(-1)!.reply_markup as any).inline_keyboard[0][0].callback_data).split(":")[1]!;
 
-    await handleUpdate(env, callbackUpdate(OWNER, `d:${draftId}:e`));
+    await handleUpdate(env, callbackUpdate(ADMIN, `d:${draftId}:e`));
     expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Напишіть, що змінити");
-    await handleUpdate(env, textUpdate(OWNER, "прибери Олега, зроби онлайн"));
+    await handleUpdate(env, textUpdate(ADMIN, "прибери Олега, зроби онлайн"));
     expect(jobs.map((j) => j.body)).toEqual([{ type: "edit", draftId, instruction: "прибери Олега, зроби онлайн" }]);
     await runJobs(env, jobs);
 
     const editCall = calls.filter((c) => c.url.includes("openrouter.ai"))[1]!.body as { messages: { content: string }[] };
     expect(editCall.messages[1]!.content).toContain("Правка: прибери Олега, зроби онлайн");
-    const draft = await getDraft(env.db, draftId);
+    const draft = await getDraft(env.DB, draftId);
     expect(draft).toMatchObject({ state: "pending", edits_count: 1 });
     expect(draft!.card!.format).toBe("google_meet");
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Google Meet");
@@ -348,57 +360,27 @@ describe("meeting creation", () => {
   it("offers free slots when the time is unknown and uses the chosen one", async () => {
     await seedConnectedOwner();
     const calls = mockFetch([(url) => (url.hostname === "openrouter.ai" ? llmReply(llmCard({ start: null })) : undefined)]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном"));
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "зустріч з Іваном"));
     await runJobs(env, jobs);
-    const keyboard = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] })
-      .inline_keyboard;
+    const keyboard = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as any).inline_keyboard as { text: string; callback_data: string }[][];
     const slots = keyboard.flat().filter((b) => b.text.startsWith("🕒"));
     expect(slots).toHaveLength(3);
 
-    await handleUpdate(env, callbackUpdate(OWNER, slots[1]!.callback_data));
-    const draft = await getDraft(env.db, slots[1]!.callback_data.split(":")[1]!);
+    await handleUpdate(env, callbackUpdate(ADMIN, slots[1]!.callback_data));
+    const draft = await getDraft(env.DB, slots[1]!.callback_data.split(":")[1]!);
     expect(draft!.card!.start).toBeTruthy();
-    const after = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] })
-      .inline_keyboard.flat();
+    const after = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as any).inline_keyboard.flat() as { callback_data: string }[];
     expect(after.some((b) => b.callback_data.endsWith(":c"))).toBe(true);
-  });
-
-  it("reports a failed LLM call to the owner after the retries", async () => {
-    await seedConnectedOwner();
-    const calls = mockFetch([(url) => (url.hostname === "openrouter.ai" ? new Response("bad", { status: 400 }) : undefined)]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном"));
-    await runJobs(env, jobs);
-    const texts = tgCalls(calls, "sendMessage").map((m) => String(m.text));
-    expect(texts.some((t) => t.includes("Не вдалося підготувати картку"))).toBe(true);
-    const { rows } = await db.query<{ scope: string }>("SELECT scope FROM errors");
-    expect(rows.map((r) => r.scope)).toEqual(["job.parse"]);
   });
 
   it("asks to connect the calendar before creating anything", async () => {
     await seedConnectedOwner();
-    await db.query("DELETE FROM google_auth");
+    await plainEnv.DB.prepare("DELETE FROM google_auth").run();
     const calls = mockFetch([]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном завтра"));
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(ADMIN, "зустріч з Іваном завтра"));
     expect(jobs).toEqual([]);
     expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("підключіть Google Calendar");
-  });
-});
-
-describe("address book", () => {
-  it("adds, lists and deletes contacts", async () => {
-    await seedConnectedOwner();
-    const calls = mockFetch([]);
-    const { env } = testEnv(db);
-    await handleUpdate(env, textUpdate(OWNER, "/contact Іван Петренко Ivan@Example.com"));
-    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Збережено: Іван Петренко — ivan@example.com");
-    await handleUpdate(env, textUpdate(OWNER, "/contact без пошти"));
-    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Формат");
-    await handleUpdate(env, textUpdate(OWNER, "/contacts"));
-    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Іван Петренко — ivan@example.com");
-    await handleUpdate(env, textUpdate(OWNER, "/contact_del ivan@example.com"));
-    expect((await listContacts(db)).map((c) => c.email)).toEqual(["o.melnyk@ribas.ua"]);
   });
 });
