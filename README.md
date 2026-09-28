@@ -1,34 +1,52 @@
 # 🗓 AI-secretary
 
-Особистий Telegram-бот-секретар для одного керівника. Пишете, надиктовуєте, пересилаєте переписку або кидаєте
-скріншот — бот готує картку зустрічі, а після «Створити» подія зʼявляється в Google Calendar і учасники отримують
-запрошення на пошту.
+Особистий Telegram-секретар із відкритим кодом. Пишете, надиктовуєте, пересилаєте переписку або кидаєте
+скріншот — бот готує картку зустрічі, а після «Створити» подія зʼявляється у вашому Google Calendar і учасники
+отримують запрошення на пошту.
+
+Кожен розгортає **власну копію** на своєму Vercel за кілька хвилин — безкоштовно, без серверів і без коду.
 
 **Node.js + TypeScript · Vercel Functions · Neon Postgres · OpenRouter · ElevenLabs**
 
-> 🔒 **Бот працює строго для однієї людини** — власника з `OWNER_TELEGRAM_ID`. Повідомлення й кнопки від будь-кого
-> іншого ігноруються без відповіді: сторонній навіть не дізнається, що бот існує.
+> 🔒 **Кожна копія служить рівно одній людині** — тій, чий Telegram ID вказано в `OWNER_TELEGRAM_ID`.
+> Повідомлення від усіх інших бот мовчки ігнорує: сторонній навіть не дізнається, що бот працює.
 
 ---
 
-## 🚀 Розгортання
+<a id="deploy"></a>
 
-Найпростіше — попросити агента **Claude Code** з підключеним Vercel MCP:
+## 🚀 Розгортання за 5 хвилин
 
-> «Розгорни бота на Vercel»
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary&products=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%5D)
 
-Агент знайде інструкцію `.claude/skills/deploy-vercel/SKILL.md`, одним повідомленням спитає все потрібне, сам
-створить секрети, підключить базу, задеплоїть, зареєструє вебхук і перевірить результат через `/api/health`.
+1. **Підготуйте три значення:**
 
-Що підготувати заздалегідь:
+   | Змінна | Що це | Де взяти |
+   |---|---|---|
+   | `TELEGRAM_BOT_TOKEN` | токен вашого бота | [@BotFather](https://t.me/BotFather) → `/newbot` |
+   | `OWNER_TELEGRAM_ID` | ваш **числовий** Telegram ID | напишіть [@userinfobot](https://t.me/userinfobot) |
+   | `OPENROUTER_API_KEY` | ключ до LLM | [openrouter.ai/keys](https://openrouter.ai/keys) |
 
-| | Що | Де взяти |
-|---|---|---|
-| 1 | Токен бота | [@BotFather](https://t.me/BotFather) → `/newbot` |
-| 2 | Ваш **числовий** Telegram ID | напишіть [@userinfobot](https://t.me/userinfobot) |
-| 3 | Google OAuth Client ID і Secret | Google Cloud Console — агент проведе по кроках |
-| 4 | Ключ OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) |
-| 5 | Ключ ElevenLabs | [elevenlabs.io](https://elevenlabs.io) → Profile → API keys |
+2. **Натисніть «Deploy with Vercel»**, вставте ці значення й погодьтеся підключити безкоштовну базу **Neon**.
+   Якщо Vercel не запропонував Neon — після деплою: проєкт → **Storage** → **Create Database** → **Neon**.
+3. **Відкрийте свій сайт** `https://<ваш-проєкт>.vercel.app` — відкриється сторінка налаштування. Вона сама
+   підключить Telegram-бота і покаже, що лишилось: Google Calendar (покрокова інструкція з готовим Redirect URI)
+   і, за бажанням, голосові.
+4. **Напишіть своєму боту `/start`**, заповніть профіль і натисніть «Підключити Google Calendar». Готово.
+
+> 💡 Можна доручити все агенту **Claude Code** з підключеним Vercel MCP: «розгорни бота на Vercel». Він візьме
+> інструкцію з `.claude/skills/deploy-vercel/SKILL.md` і спитає лише те, чого не зможе зробити сам.
+
+### Необовʼязкові змінні
+
+| Змінна | Навіщо |
+|---|---|
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Calendar — сторінка налаштування покаже, як створити |
+| `ELEVENLABS_API_KEY` | розпізнавання голосових ([ключ](https://elevenlabs.io/app/settings/api-keys)) |
+| `LLM_MODEL`, `LLM_MODEL_SUMMARY` | інші моделі OpenRouter (за замовчуванням `google/gemini-2.5-flash` і `anthropic/claude-sonnet-4.5`) |
+| `ENCRYPTION_KEY` | власний ключ шифрування токенів Google (інакше виводиться з токена бота) |
+| `CRON_SECRET` | закрити щоденний cron від сторонніх викликів |
+| `PUBLIC_URL` | власний домен замість `*.vercel.app` |
 
 ---
 
@@ -55,19 +73,18 @@
 | `/cancel` | скасувати поточну дію |
 | `/errors` | останні помилки |
 
-**Далі за планом:** етап 2 — нагадування за 30 хв, перенесення/скасування, `/today`, `/week`;
-етап 3 — записи, транскрибація, підсумки.
+Інтерфейс бота — українською.
 
 ---
 
-## 🏗 Архітектура
+## 🏗 Як це працює
 
 ```
 Telegram ─ webhook ─▶ /api/telegram ─────┐
 Google   ─ push ────▶ /api/gcal-push ────┤            ┌─▶ Google Calendar API
 Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─ Vercel  ──┼─▶ OpenRouter (LLM)
 Vercel Cron (щодня) ▶ /api/cron/daily ───┤  Functions └─▶ ElevenLabs (голос)
-Перевірка ──────────▶ /api/health ───────┘     │
+Ви ─────────────────▶ /api/setup ────────┘     │
                                           Neon Postgres
 ```
 
@@ -75,9 +92,9 @@ Vercel Cron (щодня) ▶ /api/cron/daily ───┤  Functions └─▶ E
   після відповіді (`waitUntil`).
 - **Push замість опитування.** `events.watch` → Google повідомляє про зміни → `events.list` із `syncToken` бере
   лише змінене. Щоденний cron продовжує підписку й робить страхувальну синхронізацію на 30 днів.
-- **Нуль ручної роботи з БД.** Таблиці створюються автоматично при першому запиті.
-- **Безпека.** Перевірка власника на кожному вході, секрет вебхука Telegram, токен каналу Google, `CRON_SECRET`,
-  підписаний `state` в OAuth, токени Google зашифровані AES-256-GCM.
+- **Нуль ручної роботи.** Таблиці створюються автоматично, вебхук Telegram реєструє сторінка налаштування.
+- **Безпека.** Перевірка власника на кожному вході, секрет вебхука Telegram, токен каналу Google, підписаний
+  `state` в OAuth, токени Google зашифровані AES-256-GCM. Ваші дані — лише у вашій базі.
 
 <details>
 <summary><b>Навіщо база даних</b></summary>
@@ -90,7 +107,7 @@ Vercel Cron (щодня) ▶ /api/cron/daily ───┤  Functions └─▶ E
 | Картка до «Створити» | кнопки «Змінити / Створити» натискаються в окремому запиті |
 | Серія пересланих повідомлень | зібрати переписку в одну картку |
 | Стан push-каналу, `syncToken` | отримувати від Google лише зміни й продовжувати підписку |
-| Дзеркало календаря | вільні слоти, перетини, а на етапі 2 — нагадування |
+| Дзеркало календаря | вільні слоти й перетини |
 | Адресна книга, помилки | email за іменем, діагностика |
 
 Безкоштовного Neon (0.5 GB) для однієї людини вистачить із великим запасом.
@@ -101,7 +118,7 @@ Vercel Cron (щодня) ▶ /api/cron/daily ───┤  Functions └─▶ E
 
 ```
 api/                 Vercel Functions (тонкі обгортки)
-src/app.ts           HTTP-обробники й запуск фонових задач
+src/app.ts           HTTP-обробники, сторінка налаштування, фонові задачі
 src/jobs.ts          фонові задачі з повторами
 src/bot/             онбординг, картка зустрічі, створення події
 src/telegram/        Bot API, маршрутизація, перевірка власника
@@ -111,6 +128,9 @@ src/llm/, src/stt/   OpenRouter, ElevenLabs
 test/                тести (Postgres у памʼяті через PGlite)
 ```
 </details>
+
+**Далі за планом:** нагадування за 30 хв, перенесення/скасування, `/today`, `/week`; записи зустрічей,
+транскрибація й підсумки.
 
 ---
 
@@ -126,3 +146,7 @@ npm run dev       # локальний запуск через Vercel CLI
 ```
 
 Змінні середовища — у `.env.example`.
+
+## 📄 Ліцензія
+
+[MIT](LICENSE) — використовуйте, змінюйте й розгортайте вільно.

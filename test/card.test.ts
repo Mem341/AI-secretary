@@ -11,8 +11,8 @@ import { kyivLocalToDate } from "../src/lib/time";
 import { makeOwner } from "./helpers";
 
 const directory = [
-  { name: "Олег Мельник", email: "o.melnyk@ribas.ua" },
-  { name: "Ірина Шевченко", email: "i.shevchenko@ribas.ua" },
+  { name: "Олег Мельник", email: "o.melnyk@acme.ua" },
+  { name: "Ірина Шевченко", email: "i.shevchenko@acme.ua" },
 ];
 
 describe("normalizeCard", () => {
@@ -42,7 +42,7 @@ describe("normalizeCard", () => {
     expect(card.location).toBe("вул. Хрещатик, 1, Київ");
     expect(card.attendees).toEqual([
       { name: "Іван Петренко", email: "ivan@example.com", internal: false },
-      { name: "Олег", email: "o.melnyk@ribas.ua", internal: true },
+      { name: "Олег", email: "o.melnyk@acme.ua", internal: true },
     ]);
     expect(card.title).toBe("Іван Петренко + Олександр");
     expect(card.agenda).toEqual(["Кошторис", "Терміни"]);
@@ -73,8 +73,8 @@ describe("normalizeCard", () => {
 
 describe("findInDirectory", () => {
   it("matches full name, unique first name, ignores apostrophes and case", () => {
-    expect(findInDirectory(directory, "ірина шевченко")?.email).toBe("i.shevchenko@ribas.ua");
-    expect(findInDirectory(directory, "Олег")?.email).toBe("o.melnyk@ribas.ua");
+    expect(findInDirectory(directory, "ірина шевченко")?.email).toBe("i.shevchenko@acme.ua");
+    expect(findInDirectory(directory, "Олег")?.email).toBe("o.melnyk@acme.ua");
     expect(findInDirectory([...directory, { name: "Олег Бондар", email: "b@r.ua" }], "Олег")).toBeNull();
   });
 });

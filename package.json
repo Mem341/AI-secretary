@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "vercel dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "telegram:setup": "node scripts/telegram-setup.mjs"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

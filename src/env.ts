@@ -1,24 +1,32 @@
+import { createHash } from "node:crypto";
 import type { Db } from "./db/client";
 import type { Job } from "./jobs";
 
-/** Settings from environment variables (Vercel project settings). */
+/**
+ * Settings from environment variables. Anyone can deploy their own copy: only three variables are required,
+ * everything else is optional or derived, and the bot always serves exactly one owner.
+ */
 export interface Config {
   /** The only Telegram user the bot talks to. Everyone else is ignored. */
   OWNER_TELEGRAM_ID: number;
-  /** Public https URL of the deployment, no trailing slash (OAuth redirect, Google push address). */
+  /** Public https URL of the deployment, no trailing slash (OAuth redirect, Google push, Telegram webhook). */
   PUBLIC_URL: string;
   LLM_MODEL: string;
   LLM_MODEL_SUMMARY: string;
   STT_MODEL: string;
 
   TELEGRAM_BOT_TOKEN: string;
+  OPENROUTER_API_KEY: string;
+  /** Header secret of the Telegram webhook; derived from the bot token unless set. */
   TELEGRAM_WEBHOOK_SECRET: string;
+  /** Encrypts stored Google tokens; derived from the bot token unless set. Must not change once in use. */
+  ENCRYPTION_KEY: string;
+  /** Google Calendar; "" until the owner creates an OAuth client (see /api/setup). */
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
-  OPENROUTER_API_KEY: string;
+  /** Voice messages; "" disables them. */
   ELEVENLABS_API_KEY: string;
-  ENCRYPTION_KEY: string;
-  /** Vercel sends it as a Bearer token with cron invocations. */
+  /** When set, Vercel Cron must send it as a Bearer token; "" leaves the (idempotent) daily cron open. */
   CRON_SECRET: string;
 }
 
@@ -36,49 +44,60 @@ export const DEFAULT_LLM_MODEL = "google/gemini-2.5-flash";
 export const DEFAULT_LLM_MODEL_SUMMARY = "anthropic/claude-sonnet-4.5";
 export const DEFAULT_STT_MODEL = "scribe_v1";
 
-const REQUIRED = [
-  "OWNER_TELEGRAM_ID",
-  "TELEGRAM_BOT_TOKEN",
-  "TELEGRAM_WEBHOOK_SECRET",
-  "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET",
-  "OPENROUTER_API_KEY",
-  "ELEVENLABS_API_KEY",
-  "ENCRYPTION_KEY",
-  "CRON_SECRET",
-] as const;
+export const REQUIRED_VARS = ["OWNER_TELEGRAM_ID", "TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY"] as const;
 
 export class ConfigError extends Error {}
 
+/** Stable secret derived from the bot token, so a fresh deployment needs no extra secrets. */
+function derive(botToken: string, purpose: string): string {
+  return createHash("sha256").update(`ai-secretary:${purpose}:${botToken}`).digest("hex");
+}
+
 /** Reads and validates the configuration; lists every missing variable at once. */
 export function loadConfig(source: Record<string, string | undefined> = process.env): Config {
-  const missing: string[] = REQUIRED.filter((k) => !source[k]?.trim());
-  const publicUrl =
-    source.PUBLIC_URL?.trim() || (source.VERCEL_PROJECT_PRODUCTION_URL ? `https://${source.VERCEL_PROJECT_PRODUCTION_URL}` : "");
+  const val = (k: string) => source[k]?.trim() ?? "";
+  const missing: string[] = REQUIRED_VARS.filter((k) => !val(k));
+  const publicUrl = val("PUBLIC_URL") || (val("VERCEL_PROJECT_PRODUCTION_URL") ? `https://${val("VERCEL_PROJECT_PRODUCTION_URL")}` : "");
   if (!publicUrl) missing.push("PUBLIC_URL");
   if (missing.length) throw new ConfigError(`Missing environment variables: ${missing.join(", ")}`);
 
-  const ownerId = Number(source.OWNER_TELEGRAM_ID);
-  if (!Number.isSafeInteger(ownerId) || ownerId <= 0) throw new ConfigError("OWNER_TELEGRAM_ID must be a numeric Telegram user id");
+  const ownerId = Number(val("OWNER_TELEGRAM_ID"));
+  if (!Number.isSafeInteger(ownerId) || ownerId <= 0) {
+    throw new ConfigError("OWNER_TELEGRAM_ID must be your numeric Telegram user id (ask @userinfobot)");
+  }
 
-  const get = (k: (typeof REQUIRED)[number]) => source[k]!.trim();
+  const botToken = val("TELEGRAM_BOT_TOKEN");
   return {
     OWNER_TELEGRAM_ID: ownerId,
     PUBLIC_URL: publicUrl.replace(/\/+$/, ""),
-    LLM_MODEL: source.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL,
-    LLM_MODEL_SUMMARY: source.LLM_MODEL_SUMMARY?.trim() || DEFAULT_LLM_MODEL_SUMMARY,
-    STT_MODEL: source.STT_MODEL?.trim() || DEFAULT_STT_MODEL,
-    TELEGRAM_BOT_TOKEN: get("TELEGRAM_BOT_TOKEN"),
-    TELEGRAM_WEBHOOK_SECRET: get("TELEGRAM_WEBHOOK_SECRET"),
-    GOOGLE_CLIENT_ID: get("GOOGLE_CLIENT_ID"),
-    GOOGLE_CLIENT_SECRET: get("GOOGLE_CLIENT_SECRET"),
-    OPENROUTER_API_KEY: get("OPENROUTER_API_KEY"),
-    ELEVENLABS_API_KEY: get("ELEVENLABS_API_KEY"),
-    ENCRYPTION_KEY: get("ENCRYPTION_KEY"),
-    CRON_SECRET: get("CRON_SECRET"),
+    LLM_MODEL: val("LLM_MODEL") || DEFAULT_LLM_MODEL,
+    LLM_MODEL_SUMMARY: val("LLM_MODEL_SUMMARY") || DEFAULT_LLM_MODEL_SUMMARY,
+    STT_MODEL: val("STT_MODEL") || DEFAULT_STT_MODEL,
+    TELEGRAM_BOT_TOKEN: botToken,
+    OPENROUTER_API_KEY: val("OPENROUTER_API_KEY"),
+    // Telegram allows only [A-Za-z0-9_-] in the webhook secret; hex fits.
+    TELEGRAM_WEBHOOK_SECRET: val("TELEGRAM_WEBHOOK_SECRET") || derive(botToken, "telegram-webhook"),
+    ENCRYPTION_KEY: val("ENCRYPTION_KEY") || derive(botToken, "encryption"),
+    GOOGLE_CLIENT_ID: val("GOOGLE_CLIENT_ID"),
+    GOOGLE_CLIENT_SECRET: val("GOOGLE_CLIENT_SECRET"),
+    ELEVENLABS_API_KEY: val("ELEVENLABS_API_KEY"),
+    CRON_SECRET: val("CRON_SECRET"),
   };
 }
 
 export function isOwner(env: Config, tgId: number | undefined): boolean {
   return tgId === env.OWNER_TELEGRAM_ID;
+}
+
+export function googleConfigured(env: Config): boolean {
+  return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+}
+
+export function voiceConfigured(env: Config): boolean {
+  return !!env.ELEVENLABS_API_KEY;
+}
+
+/** Where Google must redirect after consent; the owner pastes it into the OAuth client. */
+export function googleRedirectUri(env: Config): string {
+  return `${env.PUBLIC_URL}/api/oauth/callback`;
 }
