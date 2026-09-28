@@ -1,9 +1,13 @@
+import { parseActionDraft } from "./bot/actions";
+import { parseMailDraft } from "./bot/mail";
 import { editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
 import { helpText } from "./bot/onboarding";
 import { getDraft, transition } from "./db/drafts";
+import { pruneSelfWrites } from "./db/selfWrites";
 import { getUserById } from "./db/users";
-import type { Env } from "./env";
-import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError } from "./google/oauth";
+import { type Env, gmailPushConfigured } from "./env";
+import { gmailSync, startGmailWatch } from "./google/gmailPush";
+import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope } from "./google/oauth";
 import { fullSync, incrementalSync, startWatch } from "./google/sync";
 import { logError } from "./lib/errors";
 import { transcribe } from "./stt/elevenlabs";
@@ -17,6 +21,10 @@ export type Job =
   | { type: "parse"; draftId: string }
   /** Apply a free-text correction to the card. */
   | { type: "edit"; draftId: string; instruction: string }
+  /** Classify a reply about an existing meeting (reschedule/cancel/note) and show the confirmation. */
+  | { type: "action_parse"; draftId: string }
+  /** Classify a Gmail request: run read-only actions, or show a confirmation for sending/removing. */
+  | { type: "mail_parse"; draftId: string }
   /** Transcribe a voice message, then treat it as text. */
   | { type: "voice"; userId: number; chatId: number; fileId: string; messageId: number; replyTo: number | null }
   /** Incremental calendar sync after a Google push. */
@@ -24,7 +32,9 @@ export type Job =
   /** Full window sync (after OAuth, daily). `notify` tells the owner the result. */
   | { type: "full_sync"; userId: number; notify?: boolean }
   /** Daily maintenance: renew the push channel when `renew`, then the full sync (safety net for lost pushes). */
-  | { type: "daily"; userId: number; renew: boolean };
+  | { type: "daily"; userId: number; renew: boolean }
+  /** Report emails that arrived since the last Gmail push. */
+  | { type: "gmail_sync"; userId: number };
 
 export const JOB_ATTEMPTS = 3;
 
@@ -36,6 +46,10 @@ export async function runJob(env: Env, job: Job): Promise<void> {
       return parseDraft(env, job.draftId);
     case "edit":
       return editDraft(env, job.draftId, job.instruction);
+    case "action_parse":
+      return parseActionDraft(env, job.draftId);
+    case "mail_parse":
+      return parseMailDraft(env, job.draftId);
     case "voice": {
       const user = await getUserById(env.db, job.userId);
       if (!user) return;
@@ -65,6 +79,14 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     case "daily":
       if (job.renew) await startWatch(env, job.userId);
       await fullSync(env, job.userId);
+      await pruneSelfWrites(env.db);
+      // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.
+      if (gmailPushConfigured(env) && (await hasGmailScope(env, job.userId))) {
+        await startGmailWatch(env, job.userId).catch((err) => logError(env, "gmail.watch", err, { userId: job.userId }));
+      }
+      return;
+    case "gmail_sync":
+      await gmailSync(env, job.userId);
       return;
   }
 }
@@ -82,7 +104,7 @@ async function handleRevoked(env: Env, userId: number): Promise<void> {
 /** Tells the owner a job finally failed so the request is not lost silently. */
 async function reportJobFailure(env: Env, job: Job): Promise<void> {
   const tg = new Telegram(env);
-  if (job.type === "batch" || job.type === "parse" || job.type === "edit") {
+  if (job.type === "batch" || job.type === "parse" || job.type === "edit" || job.type === "action_parse" || job.type === "mail_parse") {
     const draft = await getDraft(env.db, job.draftId);
     if (!draft) return;
     await transition(env.db, draft.id, ["parsing", "collecting"], "failed");

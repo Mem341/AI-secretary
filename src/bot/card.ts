@@ -89,7 +89,7 @@ export function normalizeCard(raw: unknown, owner: User, directory: DirectoryEnt
   const startDate = parseIsoWithOffset(r.start) ?? parseKyivLocal(r.start);
   const duration = Number(r.duration_min);
   const format: MeetingFormat =
-    r.format === "google_meet" || r.format === "offline" ? r.format : formatOf(owner);
+    r.format === "google_meet" || r.format === "offline" || r.format === "zoom" ? r.format : formatOf(owner);
 
   const ownerEmail = owner.email?.toLowerCase() ?? null;
   const domain = ownerEmail?.split("@")[1] ?? null;
@@ -119,7 +119,7 @@ export function normalizeCard(raw: unknown, owner: User, directory: DirectoryEnt
 
   let location = str(r.location);
   if (format === "offline" && !location) location = owner.defaults.address ?? null;
-  if (format === "google_meet") location = null;
+  if (format === "google_meet" || format === "zoom") location = null;
 
   const agenda = Array.isArray(r.agenda) ? r.agenda.map(str).filter((x): x is string => !!x) : [];
   const missing = Array.isArray(r.missing) ? r.missing.map(str).filter((x): x is string => !!x) : [];
@@ -221,8 +221,9 @@ export function findFreeSlots(o: SlotOptions): Date[] {
 // Google Calendar event
 
 /** Event description per spec 4.2: initiator, agenda, where the meeting was agreed, owner's contacts. */
-export function buildDescription(card: Card, owner: User): string {
+export function buildDescription(card: Card, owner: User, zoomJoinUrl?: string): string {
   const lines: string[] = [];
+  if (zoomJoinUrl) lines.push(`Приєднатися до Zoom: ${zoomJoinUrl}`, "");
   if (card.initiator) lines.push(`Ініціатор: ${card.initiator}`);
   if (card.purpose) lines.push(`Мета: ${card.purpose}`);
   if (card.agenda.length) {
@@ -245,13 +246,17 @@ export function buildDescription(card: Card, owner: User): string {
   return lines.join("\n").replace(/^\n+/, "");
 }
 
-export function buildEventBody(card: Card, owner: User, draftId: string): Record<string, unknown> {
+/**
+ * `zoomJoinUrl` is the join link of a Zoom meeting created ahead of this call (Zoom is not a Calendar
+ * conference provider, unlike Google Meet, so its link has to be created first and passed in).
+ */
+export function buildEventBody(card: Card, owner: User, draftId: string, zoomJoinUrl?: string): Record<string, unknown> {
   const start = cardStart(card);
   const end = cardEnd(card);
   if (!start || !end) throw new Error("Card has no start time");
   const event: Record<string, unknown> = {
     summary: card.title,
-    description: buildDescription(card, owner),
+    description: buildDescription(card, owner, zoomJoinUrl),
     start: { dateTime: toKyivIso(start), timeZone: TZ },
     end: { dateTime: toKyivIso(end), timeZone: TZ },
     attendees: card.attendees
@@ -267,6 +272,8 @@ export function buildEventBody(card: Card, owner: User, draftId: string): Record
     event.conferenceData = {
       createRequest: { requestId: draftId, conferenceSolutionKey: { type: "hangoutsMeet" } },
     };
+  } else if (card.format === "zoom" && zoomJoinUrl) {
+    event.location = zoomJoinUrl;
   } else if (card.location) {
     event.location = card.location;
   }
@@ -275,6 +282,13 @@ export function buildEventBody(card: Card, owner: User, draftId: string): Record
 
 // ---------------------------------------------------------------------------------------------------------------
 // Rendering
+
+/** One line describing the meeting's format for the card and the created-confirmation message. */
+export function formatLabel(card: Card): string {
+  if (card.format === "google_meet") return "онлайн, Google Meet (посилання створить календар)";
+  if (card.format === "zoom") return "онлайн, Zoom (посилання створить бот)";
+  return `офлайн${card.location ? ` · ${esc(card.location)}` : " · місце не вказано"}`;
+}
 
 export interface CardContext {
   now: Date;
@@ -295,11 +309,7 @@ export function renderCard(card: Card, ctx: CardContext): string {
   } else {
     lines.push("<b>Коли:</b> час не вказано");
   }
-  lines.push(
-    card.format === "google_meet"
-      ? "<b>Формат:</b> онлайн, Google Meet (посилання створить календар)"
-      : `<b>Формат:</b> офлайн${card.location ? ` · ${esc(card.location)}` : " · місце не вказано"}`,
-  );
+  lines.push(`<b>Формат:</b> ${formatLabel(card)}`);
 
   lines.push("<b>Учасники:</b>");
   if (!card.attendees.length) lines.push("  — лише ви");

@@ -1,9 +1,19 @@
 import { exec, one } from "../db/client";
 import type { Env } from "../env";
-import { cancelMeetingByEvent, cancelMissingInWindow, type MeetingInput, upsertMeeting } from "../db/meetings";
+import {
+  cancelMeetingByEvent,
+  cancelMissingInWindow,
+  getMeetingByEvent,
+  type Meeting,
+  type MeetingInput,
+  upsertMeeting,
+} from "../db/meetings";
+import { linkMessage } from "../db/messageLinks";
+import { isSelfWrite } from "../db/selfWrites";
 import { randomId, safeEqual } from "../lib/crypto";
 import { HttpError } from "../lib/http";
-import { DAY } from "../lib/time";
+import { DAY, formatRange } from "../lib/time";
+import { esc, Telegram } from "../telegram/api";
 import { Calendar, type GEvent } from "./calendar";
 
 /** Initial / safety-net sync window (spec 4.1: 30 days ahead). */
@@ -52,10 +62,73 @@ export function eventToChange(ev: GEvent): EventChange {
   };
 }
 
-export async function applyEvent(env: Env, userId: number, ev: GEvent): Promise<void> {
+const REPLY_HINT = "Відповідайте на це повідомлення, щоб перенести, скасувати чи дізнатись учасників.";
+
+/** Sends an instant notice about a calendar change made outside the bot and links it to the meeting for replies. */
+async function notifyOwner(env: Env, meetingId: string | null, html: string): Promise<void> {
+  const msg = await new Telegram(env).send(env.OWNER_TELEGRAM_ID, html);
+  if (meetingId) await linkMessage(env.db, msg.message_id, "meeting", meetingId);
+}
+
+function whereLine(m: Pick<Meeting, "meet_url" | "location">): string | null {
+  if (m.meet_url) return `🔗 ${esc(m.meet_url)}`;
+  if (m.location) return `📍 ${esc(m.location)}`;
+  return null;
+}
+
+/**
+ * Mirrors one event. With `notify`, a change made OUTSIDE the bot — by the owner in Google Calendar or by a
+ * guest (guests may edit) — a new event, a new time or a cancellation, is reported to the owner at once — the "calendar → Telegram" flow. Changes
+ * the bot made itself are recognized by their self-write marker and stay silent, as do description/attendee-only
+ * edits, to keep the notices meaningful.
+ */
+export async function applyEvent(env: Env, userId: number, ev: GEvent, notify = false): Promise<void> {
   const change = eventToChange(ev);
-  if (change.kind === "cancel") await cancelMeetingByEvent(env.db, userId, ev.id);
-  else if (change.kind === "upsert") await upsertMeeting(env.db, userId, ev.id, change.meeting);
+  if (change.kind === "skip") return;
+  const quiet = !notify || (await isSelfWrite(env.db, ev.id));
+  const prior = quiet ? null : await getMeetingByEvent(env.db, userId, ev.id);
+
+  if (change.kind === "cancel") {
+    const cancelled = await cancelMeetingByEvent(env.db, userId, ev.id);
+    if (cancelled && prior) {
+      await notifyOwner(
+        env,
+        null,
+        `❌ <b>Подію скасовано в календарі</b>\n\n<b>${esc(prior.title ?? "без назви")}</b>\n${esc(
+          formatRange(new Date(prior.start_at), new Date(prior.end_at)),
+        )}`,
+      );
+    }
+    return;
+  }
+
+  const { id, inserted } = await upsertMeeting(env.db, userId, ev.id, change.meeting);
+  if (quiet) return;
+  const m = change.meeting;
+  if (inserted) {
+    const lines = [`🆕 <b>Нова подія в календарі</b>`, "", `<b>${esc(m.title ?? "без назви")}</b>`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];
+    const where = whereLine(m);
+    if (where) lines.push(where);
+    if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
+    lines.push("", REPLY_HINT);
+    await notifyOwner(env, id, lines.join("\n"));
+    return;
+  }
+  if (prior && (prior.start_at !== m.start_at || prior.end_at !== m.end_at)) {
+    await notifyOwner(
+      env,
+      id,
+      [
+        `🔄 <b>Подію перенесено в календарі</b>`,
+        "",
+        `<b>${esc(m.title ?? "без назви")}</b>`,
+        `Було: ${esc(formatRange(new Date(prior.start_at), new Date(prior.end_at)))}`,
+        `Стало: ${esc(formatRange(new Date(m.start_at), new Date(m.end_at)))}`,
+        "",
+        REPLY_HINT,
+      ].join("\n"),
+    );
+  }
 }
 
 async function saveSyncToken(env: Env, userId: number, token: string | null): Promise<void> {
@@ -117,7 +190,8 @@ export async function incrementalSync(env: Env, userId: number): Promise<number>
         ...(pageToken ? { pageToken } : {}),
       });
       for (const ev of page.items) {
-        await applyEvent(env, userId, ev);
+        // A push-driven sync: changes made outside the bot are reported to the owner at once.
+        await applyEvent(env, userId, ev, true);
         changed++;
       }
       pageToken = page.nextPageToken;

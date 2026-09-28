@@ -134,6 +134,50 @@ export const MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors (ts)`,
     ],
   },
+  {
+    version: 2,
+    statements: [
+      // Which draft flow this row belongs to: a meeting card, an action on an existing meeting
+      // (reschedule/cancel/note), or a Gmail action. `card_json` holds the JSON payload for any kind.
+      `ALTER TABLE drafts ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'meeting'`,
+      // The OAuth scopes Google actually granted (space-separated) — lets the bot tell whether Gmail access
+      // was consented to without a second OAuth client.
+      `ALTER TABLE google_auth ADD COLUMN IF NOT EXISTS granted_scope TEXT`,
+      // Marks a Google Calendar event the bot itself just wrote (create/reschedule/cancel), so the push that
+      // Google sends back for that very write is not mistaken for an externally-made change.
+      `CREATE TABLE IF NOT EXISTS recent_writes (
+        gcal_event_id TEXT   PRIMARY KEY,
+        until         BIGINT NOT NULL
+      )`,
+      // Points a sent Telegram message back to the meeting or Gmail message it is about, so a reply to it
+      // (e.g. "перенеси на завтра", "відповідай: добре") can act on the right thing.
+      `CREATE TABLE IF NOT EXISTS message_links (
+        message_id BIGINT PRIMARY KEY,
+        ref_type   TEXT   NOT NULL,
+        ref_id     TEXT   NOT NULL,
+        created_at BIGINT NOT NULL
+      )`,
+      // Gmail push (users.watch) subscription and incremental sync state, one per owner — mirrors watch_channels.
+      `CREATE TABLE IF NOT EXISTS gmail_state (
+        user_id    INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+        history_id TEXT,
+        expiration BIGINT,
+        updated_at BIGINT NOT NULL
+      )`,
+    ],
+  },
+  {
+    version: 3,
+    statements: [
+      // Small key/value settings learned at runtime, e.g. the public URL of an AWS Function URL deployment
+      // (taken from the first request's host so the scheduled cron, which has no request, knows it too).
+      `CREATE TABLE IF NOT EXISTS app_settings (
+        key        TEXT   PRIMARY KEY,
+        value      TEXT   NOT NULL,
+        updated_at BIGINT NOT NULL
+      )`,
+    ],
+  },
 ];
 
 /** Applies pending migrations. Idempotent and safe to run concurrently (IF NOT EXISTS / ON CONFLICT). */

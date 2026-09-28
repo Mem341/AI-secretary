@@ -4,6 +4,7 @@ import {
   buildEventBody,
   findFreeSlots,
   findInDirectory,
+  formatLabel,
   normalizeCard,
   renderCard,
 } from "../src/bot/card";
@@ -67,6 +68,12 @@ describe("normalizeCard", () => {
 
   it("drops location for Google Meet", () => {
     const card = normalizeCard({ format: "google_meet", location: "офіс", confidence: 1 }, owner, directory);
+    expect(card.location).toBeNull();
+  });
+
+  it("accepts zoom as a format and drops its location too", () => {
+    const card = normalizeCard({ format: "zoom", location: "офіс", confidence: 1 }, owner, directory);
+    expect(card.format).toBe("zoom");
     expect(card.location).toBeNull();
   });
 });
@@ -168,5 +175,19 @@ describe("Google event", () => {
     expect(html).toContain("Партнер — ⚠️ немає email");
     expect(html).toContain("⚠️ Перетин з «Планерка» 15:30–16:30");
     expect(html).toContain("⚠️ Не вистачає: email Партнера");
+  });
+
+  it("puts the Zoom join link in the event location and description once created", () => {
+    const zoomCard = { ...card, format: "zoom" as const };
+    const body = buildEventBody(zoomCard, owner, "draft1", "https://zoom.us/j/123") as Record<string, any>;
+    expect(body.location).toBe("https://zoom.us/j/123");
+    expect(body.conferenceData).toBeUndefined();
+    expect(body.description).toContain("Приєднатися до Zoom: https://zoom.us/j/123");
+    expect(formatLabel(zoomCard)).toContain("Zoom");
+  });
+
+  it("has no location for Zoom before the meeting is created", () => {
+    const body = buildEventBody({ ...card, format: "zoom" as const }, owner, "draft1") as Record<string, any>;
+    expect(body.location).toBeUndefined();
   });
 });

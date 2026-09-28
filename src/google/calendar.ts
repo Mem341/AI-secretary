@@ -74,6 +74,19 @@ export class Calendar {
     return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}`);
   }
 
+  /** Partial update (reschedule, note, attendees); notifies attendees of the change. */
+  patchEvent(eventId: string, patch: Record<string, unknown>): Promise<GEvent> {
+    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  /** Deletes the event and notifies attendees. */
+  async deleteEvent(eventId: string): Promise<void> {
+    await this.request<void>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, { method: "DELETE" });
+  }
+
   listEvents(params: Record<string, string>): Promise<GEventList> {
     return this.request<GEventList>(`/calendars/primary/events?${new URLSearchParams(params)}`);
   }

@@ -1,6 +1,16 @@
 import { getUserById, updateUser } from "./db/users";
 import { all } from "./db/client";
-import { type Config, type Env, googleConfigured, googleRedirectUri, REQUIRED_VARS, voiceConfigured } from "./env";
+import {
+  type Config,
+  type Env,
+  gmailPushConfigured,
+  googleConfigured,
+  googleRedirectUri,
+  REQUIRED_VARS,
+  voiceConfigured,
+  zoomConfigured,
+} from "./env";
+import { decodePush, gmailPushToken, type PubSubPush, startGmailWatch } from "./google/gmailPush";
 import type { Db } from "./db/client";
 import { completeAuth, connectLink, forgetGoogleAuth, googleAuthUrl, verifyState } from "./google/oauth";
 import { channelOwner, RENEW_BEFORE_MS, startWatch } from "./google/sync";
@@ -101,6 +111,10 @@ export async function oauthCallback(req: Request, env: Env): Promise<Response> {
     if (email) await updateUser(env.db, userId, { email: email.toLowerCase() });
     await startWatch(env, userId);
     await env.jobs.send({ type: "full_sync", userId, notify: true });
+    // New-mail notifications are optional: a Pub/Sub problem must not fail the calendar connection.
+    if (gmailPushConfigured(env) && scope.includes("gmail.modify")) {
+      await startGmailWatch(env, userId).catch((err) => logError(env, "gmail.watch", err, { userId }));
+    }
   } catch (err) {
     await logError(env, "oauth.callback", err, { userId });
     await tg.send(user.tg_id, "😔 Не вдалося підключити календар. Спробуйте ще раз через /settings.").catch(() => undefined);
@@ -118,6 +132,24 @@ export async function gcalPush(req: Request, env: Env): Promise<Response> {
   if (!userId) return new Response("ok");
   if (req.headers.get("x-goog-resource-state") !== "sync") await env.jobs.send({ type: "sync", userId });
   return new Response("ok");
+}
+
+/**
+ * POST /api/gmail-push?token=… — Cloud Pub/Sub push subscription for the Gmail watch. Answers 2xx at once (Pub/Sub
+ * retries otherwise) and reads the new emails in the background.
+ */
+export async function gmailPush(req: Request, env: Env): Promise<Response> {
+  if (!safeEqual(new URL(req.url).searchParams.get("token"), gmailPushToken(env))) return new Response("forbidden", { status: 403 });
+  const body = (await req.json().catch(() => ({}))) as PubSubPush;
+  const note = decodePush(body);
+  const row = await all<{ user_id: number }>(
+    env.db,
+    "SELECT g.user_id FROM gmail_state g JOIN users u ON u.id = g.user_id WHERE u.tg_id = $1",
+    [env.OWNER_TELEGRAM_ID],
+  );
+  if (row[0]) await env.jobs.send({ type: "gmail_sync", userId: row[0].user_id });
+  else console.warn("Gmail push without a watch", note?.emailAddress);
+  return new Response(null, { status: 204 });
 }
 
 /**
@@ -174,6 +206,7 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
 
 const BOT_COMMANDS = [
   { command: "new", description: "Нова зустріч" },
+  { command: "mail", description: "Пошта Gmail" },
   { command: "contacts", description: "Адресна книга" },
   { command: "settings", description: "Профіль і календар" },
   { command: "cancel", description: "Скасувати поточну дію" },
@@ -186,6 +219,8 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
   const me = await tg.call<{ username: string }>("getMe", {});
   const url = `${env.PUBLIC_URL}/api/telegram`;
   const info = await tg.call<{ url: string }>("getWebhookInfo", {});
+  // The command menu is refreshed every time, so an updated deployment shows new commands.
+  await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   // The secret cannot be read back, so the webhook is (re)registered whenever the URL differs.
   if (info.url === url) return { username: me.username, changed: false };
   await tg.call("setWebhook", {
@@ -194,7 +229,6 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
     allowed_updates: ["message", "callback_query"],
     drop_pending_updates: true,
   });
-  await tg.call("setMyCommands", { commands: BOT_COMMANDS });
   return { username: me.username, changed: true };
 }
 
@@ -228,15 +262,49 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
   const redirect = googleRedirectUri(env);
   steps.push(
     googleConfigured(env)
-      ? { status: "ok", title: "Google Calendar", details: `OAuth-клієнт задано. Redirect URI: ${code(redirect)}` }
+      ? { status: "ok", title: "Google Calendar і Gmail", details: `OAuth-клієнт задано. Redirect URI: ${code(redirect)}` }
       : {
           status: "todo",
-          title: "Google Calendar",
-          details: `Створіть OAuth-клієнт, щоб бот міг працювати з вашим календарем:<ol>
-<li><a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Увімкніть Google Calendar API</a> у своєму проєкті Google Cloud.</li>
-<li><a href="https://console.cloud.google.com/auth/overview">OAuth consent screen</a>: для Google Workspace — <b>Internal</b>; для звичайного Gmail — <b>External</b> і кнопка <b>Publish app</b> (у режимі Testing Google відключає доступ кожні 7 днів).</li>
+          title: "Google Calendar і Gmail",
+          details: `Створіть OAuth-клієнт, щоб бот працював з вашим календарем і поштою:<ol>
+<li>У своєму проєкті Google Cloud увімкніть <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</a> і <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">Gmail API</a>.</li>
+<li><a href="https://console.cloud.google.com/auth/overview">OAuth consent screen</a>: для Google Workspace — <b>Internal</b> (найпростіше); для звичайного Gmail — <b>External</b>.</li>
 <li><a href="https://console.cloud.google.com/apis/credentials">Credentials</a> → Create credentials → OAuth client ID → <b>Web application</b>, Authorized redirect URI: ${code(redirect)}</li>
-<li>Додайте у Vercel змінні ${code("GOOGLE_CLIENT_ID")} і ${code("GOOGLE_CLIENT_SECRET")} та зробіть Redeploy.</li></ol>`,
+<li>Додайте змінні ${code("GOOGLE_CLIENT_ID")} і ${code("GOOGLE_CLIENT_SECRET")} у налаштуваннях хостингу та перерозгорніть.</li></ol>
+<b>Про доступ до пошти.</b> Gmail — «restricted» дозвіл Google. Для Workspace (Internal) обмежень немає. Для звичайного Gmail
+(External) натисніть <b>Publish app</b>: під час входу Google покаже «застосунок не перевірено» — <i>Advanced → Continue</i>
+(для особистого використання це нормально, ліміт 100 користувачів). У режимі <b>Testing</b> Google вимагає перепідключення раз на
+7 днів (бот нагадає кнопкою). Щоб прибрати попередження зовсім — верифікація застосунку в Google.`,
+        },
+  );
+
+  steps.push(
+    gmailPushConfigured(env)
+      ? {
+          status: "ok",
+          title: "Миттєві сповіщення про нові листи",
+          details: `Pub/Sub-топік ${code(env.GMAIL_PUBSUB_TOPIC)}. Адресу для push-підписки (з секретним токеном) бот надсилає вам у /settings.`,
+        }
+      : {
+          status: "optional",
+          title: "Миттєві сповіщення про нові листи (необовʼязково)",
+          details: `Без цього пошта працює на запит («перевір пошту»). Щоб бот одразу повідомляв про нові листи:<ol>
+<li>Увімкніть <a href="https://console.cloud.google.com/apis/library/pubsub.googleapis.com">Cloud Pub/Sub API</a> і створіть топік, напр. ${code("gmail-notify")}.</li>
+<li>У топіку → Permissions дайте ${code("gmail-api-push@system.gserviceaccount.com")} роль <b>Pub/Sub Publisher</b>.</li>
+<li>Додайте змінну ${code("GMAIL_PUBSUB_TOPIC")} = ${code("projects/<project-id>/topics/gmail-notify")} і перерозгорніть.</li>
+<li>Відкрийте в боті /settings — там буде адреса для push-підписки. Створіть у топіку підписку типу <b>Push</b> на цю адресу.</li>
+<li>Перепідключіть Google у /settings — бот підпишеться на скриньку.</li></ol>`,
+        },
+  );
+
+  steps.push(
+    zoomConfigured(env)
+      ? { status: "ok", title: "Zoom", details: "Zoom підключено — його можна обрати форматом зустрічі." }
+      : {
+          status: "optional",
+          title: "Zoom (необовʼязково)",
+          details: `Google Meet працює без налаштувань. Щоб створювати зустрічі в Zoom: у <a href="https://marketplace.zoom.us/develop/create">Zoom Marketplace</a>
+створіть застосунок <b>Server-to-Server OAuth</b> зі scope ${code("meeting:write:admin")} і додайте ${code("ZOOM_ACCOUNT_ID")}, ${code("ZOOM_CLIENT_ID")}, ${code("ZOOM_CLIENT_SECRET")}.`,
         },
   );
 
@@ -277,7 +345,7 @@ export function setupBootErrorPage(source: Record<string, string | undefined>, d
     steps.push({
       status: "error",
       title: "Змінні середовища",
-      details: `Додайте у Vercel (Project → Settings → Environment Variables) і зробіть Redeploy: ${missing.map(code).join(", ")}.<ol>
+      details: `Додайте змінні середовища й перерозгорніть (Vercel: Project → Settings → Environment Variables; AWS: змінні Lambda у ${code("template.yaml")}/консолі): ${missing.map(code).join(", ")}.<ol>
 <li>${code("TELEGRAM_BOT_TOKEN")} — у <a href="https://t.me/BotFather">@BotFather</a> командою /newbot.</li>
 <li>${code("OWNER_TELEGRAM_ID")} — ваш числовий ID, його напише <a href="https://t.me/userinfobot">@userinfobot</a>. Бот відповідатиме лише цій людині.</li>
 <li>${code("OPENROUTER_API_KEY")} — <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li></ol>`,
@@ -292,7 +360,7 @@ export function setupBootErrorPage(source: Record<string, string | undefined>, d
     steps.push({
       status: "todo",
       title: "База даних",
-      details: "У Vercel відкрийте проєкт → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b> (безкоштовний план), підключіть до проєкту й зробіть Redeploy. Таблиці створяться автоматично.",
+      details: `Потрібен Postgres у змінній ${code("DATABASE_URL")}. Vercel: проєкт → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b> (безкоштовно). AWS: створіть базу на <a href="https://neon.tech">neon.tech</a> (безкоштовно) і вкажіть рядок підключення. Таблиці створяться автоматично.`,
     });
   }
   return renderSetupPage(steps);

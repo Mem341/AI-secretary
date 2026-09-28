@@ -18,8 +18,9 @@ dashboard instructions when a tool cannot do a step. Never echo secret values ba
 | 1 | Telegram **bot token** | yes | @BotFather → `/newbot` → token like `123456:ABC…` |
 | 2 | Their **numeric Telegram ID** — the only person the bot will answer | yes | Message @userinfobot; it replies with a number. A @username does not work. |
 | 3 | **OpenRouter API key** | yes | https://openrouter.ai/keys (the account needs credit) |
-| 4 | Google Calendar now or later? | no | Needs a Google OAuth client; the /api/setup page walks through it with the exact redirect URI after the first deploy |
+| 4 | Google Calendar & Gmail now or later? | no | Needs a Google OAuth client; the /api/setup page walks through it with the exact redirect URI after the first deploy |
 | 5 | ElevenLabs API key for voice messages | no | https://elevenlabs.io/app/settings/api-keys |
+| 5a | Zoom (Server-to-Server OAuth app), Gmail new-mail push (Pub/Sub topic) | no | Optional; the /api/setup page lists the steps |
 | 6 | Which repository to deploy | no | Their fork, or the public `github.com/Mem341/AI-secretary` |
 
 Nothing else is needed: the webhook secret and encryption key are derived from the bot token, the database URL
@@ -36,8 +37,9 @@ comes from the Neon integration, and the public URL from Vercel.
 ## Step 3 — environment variables (Production)
 
 Required: `OWNER_TELEGRAM_ID`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` (+ `DATABASE_URL` from Neon).
-Optional: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ELEVENLABS_API_KEY`, `LLM_MODEL`, `LLM_MODEL_SUMMARY`,
-`CRON_SECRET`, `ENCRYPTION_KEY`, `PUBLIC_URL` (custom domain only). See `.env.example`.
+Optional: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ELEVENLABS_API_KEY`, `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`,
+`ZOOM_CLIENT_SECRET`, `GMAIL_PUBSUB_TOPIC`, `LLM_MODEL`, `LLM_MODEL_SUMMARY`, `CRON_SECRET`, `ENCRYPTION_KEY`,
+`PUBLIC_URL` (custom domain only). See `.env.example`. The owner can also switch the OpenRouter model in /settings.
 
 CLI: `printf '%s' "$VALUE" | npx vercel env add NAME production`. Redeploy after changing variables.
 
@@ -54,10 +56,15 @@ If the page is a Vercel login screen, production is behind Deployment Protection
 
 ## Step 5 — Google Calendar (the user does this in the browser)
 
-Follow the steps on /api/setup: enable Google Calendar API, OAuth consent screen (**Internal** for Google Workspace;
-**External + Publish app** for personal Gmail — in *Testing* Google revokes access every 7 days), create a
+Follow the steps on /api/setup: enable Google Calendar API and Gmail API, OAuth consent screen, create a
 **Web application** OAuth client with the redirect URI from the page, add `GOOGLE_CLIENT_ID` /
-`GOOGLE_CLIENT_SECRET`, redeploy.
+`GOOGLE_CLIENT_SECRET`, redeploy. Consent screen type:
+
+- Google Workspace account → **Internal** (no limits).
+- Personal Gmail → **External + Publish app**. Gmail is a Google "restricted" scope, so on sign-in Google shows
+  "this app isn't verified" — *Advanced → Continue* is fine for a personal bot (unverified apps are capped at
+  100 users). Left in *Testing*, Google expires the grant every 7 days (the bot asks to reconnect). Google's app
+  verification removes the warning if the user wants that.
 
 ## Step 6 — verify
 

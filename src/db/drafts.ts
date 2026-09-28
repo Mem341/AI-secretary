@@ -1,4 +1,3 @@
-import type { Card } from "../bot/card";
 import { randomId } from "../lib/crypto";
 import { type Db, exec, one } from "./client";
 import { HOUR } from "../lib/time";
@@ -14,11 +13,19 @@ export type DraftState =
   | "created"
   | "cancelled"
   | "failed";
+/**
+ * Which flow a draft belongs to: a meeting card (the original, stateful flow), an action on an existing
+ * meeting (reschedule/cancel/note — single-shot: always re-classified from the full accumulated text), or a
+ * Gmail action (also single-shot). `card_json` holds whichever payload shape the kind expects.
+ */
+export type DraftKind = "meeting" | "action" | "mail";
 
 export interface Draft {
   id: string;
   user_id: number;
-  card: Card | null;
+  kind: DraftKind;
+  /** The kind's payload (a `Card` for "meeting", a `MeetingAction` for "action", a `MailAction` for "mail"). */
+  card: unknown;
   source_type: SourceType;
   source_text: string;
   state: DraftState;
@@ -38,7 +45,7 @@ export const INPUT_WINDOW_MS = 2 * HOUR;
 function fromRow(row: DraftRow | null): Draft | null {
   if (!row) return null;
   const { card_json, ...rest } = row;
-  return { ...rest, card: card_json ? (JSON.parse(card_json) as Card) : null };
+  return { ...rest, card: card_json ? JSON.parse(card_json) : null };
 }
 
 export async function getDraft(db: Db, id: string): Promise<Draft | null> {
@@ -52,14 +59,15 @@ export async function createDraft(
   sourceText: string,
   state: DraftState,
   cardMessageId: number | null = null,
+  opts: { kind?: DraftKind; meetingId?: string } = {},
 ): Promise<string> {
   const id = randomId(9);
   const now = Date.now();
   await exec(
     db,
-    `INSERT INTO drafts (id, user_id, source_type, source_text, state, card_message_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
-    [id, userId, sourceType, sourceText, state, cardMessageId, now],
+    `INSERT INTO drafts (id, user_id, source_type, source_text, state, card_message_id, kind, meeting_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+    [id, userId, sourceType, sourceText, state, cardMessageId, opts.kind ?? "meeting", opts.meetingId ?? null, now],
   );
   return id;
 }
@@ -112,10 +120,11 @@ export async function transition(
   return changed > 0;
 }
 
+/** Saves the kind's payload (a Card, a MeetingAction, a MailAction — whatever this draft's `kind` expects). */
 export async function saveCard(
   db: Db,
   id: string,
-  card: Card,
+  card: unknown,
   state: DraftState,
   cardMessageId?: number,
 ): Promise<void> {

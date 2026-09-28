@@ -23,6 +23,10 @@ export const testConfig: Config = {
   ELEVENLABS_API_KEY: "el-key",
   ENCRYPTION_KEY: "test-encryption-key",
   CRON_SECRET: "cron-secret",
+  ZOOM_ACCOUNT_ID: "",
+  ZOOM_CLIENT_ID: "",
+  ZOOM_CLIENT_SECRET: "",
+  GMAIL_PUBSUB_TOPIC: "",
 };
 
 /** Postgres in memory (PGlite) behind the app's Db interface; BIGINT parsed to number as in production. */
@@ -38,7 +42,22 @@ export async function pgliteDb(): Promise<Db> {
   return db;
 }
 
-const TABLES = ["errors", "summaries", "recordings", "reminders", "drafts", "meetings", "watch_channels", "google_auth", "contacts", "users"];
+const TABLES = [
+  "errors",
+  "summaries",
+  "recordings",
+  "reminders",
+  "drafts",
+  "meetings",
+  "watch_channels",
+  "gmail_state",
+  "google_auth",
+  "contacts",
+  "message_links",
+  "recent_writes",
+  "app_settings",
+  "users",
+];
 
 export async function resetDb(db: Db): Promise<void> {
   await db.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);

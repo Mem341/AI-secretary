@@ -2,15 +2,13 @@ import { waitUntil } from "@vercel/functions";
 import { createEnv, realSleep, type Runtime } from "./app";
 import { neonDb } from "./db/client";
 import { migrate } from "./db/schema";
-import { ConfigError, type Env, loadConfig } from "./env";
+import { ConfigError, databaseUrl, type Env, loadConfig } from "./env";
+
+export { databaseUrl };
 
 const runtime: Runtime = { defer: waitUntil, sleep: realSleep };
 
 let booting: Promise<Env> | null = null;
-
-export function databaseUrl(source: Record<string, string | undefined> = process.env): string | undefined {
-  return source.DATABASE_URL || source.POSTGRES_URL;
-}
 
 /** Builds the environment once per instance; the schema is migrated on the first request. */
 function boot(): Promise<Env> {
