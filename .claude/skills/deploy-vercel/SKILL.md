@@ -1,6 +1,6 @@
 ---
 name: deploy-vercel
-description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret), validate them, create the project with Neon Postgres, set env vars, deploy, add the Google redirect URI, finish on /api/setup. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
+description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret), validate them, create the Neon Postgres database itself (Vercel CLI integration, Neon MCP or API; otherwise ask for a Neon URL up front, never after deploy), create the project, set env vars, deploy, add the Google redirect URI, finish on /api/setup. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
 ---
 
 # Deploy AI-secretary to Vercel
@@ -16,7 +16,7 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 - **Talk in the user's language.** Russian or Ukrainian if they write that way.
 - **Ask for exactly the four items in Step 1, in one message.** Do not ask about anything else:
   - not Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
-  - not the database (you create it on Vercel);
+  - not the database, unless Step 0 found no way to create it yourself (then it is item 5);
   - not the repository (use the public `github.com/Mem341/AI-secretary` unless they mention a fork).
 
   Optional extras are mentioned once, in the final report.
@@ -34,7 +34,29 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 - Prefer the Vercel MCP tools when connected. Otherwise use the Vercel CLI (`npx vercel`). When neither can do a
   step, give the user exact dashboard clicks.
 
-## Step 1 — collect the four inputs
+## Step 0 — decide how the database gets created (before asking anything)
+
+The bot **cannot run without Postgres**: Vercel functions keep no memory between requests, and the bot must
+remember the Google grant, the meeting card until «Створити», batched forwards, reply links and the calendar
+mirror. Never deploy and finish with "the database is on you" at the end: settle it now.
+
+Pick the first path that works:
+
+1. **Vercel CLI integration**: `npx vercel integration add neon` in the linked project (free plan). It creates the
+   Neon database and sets `DATABASE_URL` on the project. If the command is missing or fails, try the next path.
+2. **Neon MCP server** (if connected): create a project named `ai-secretary` in the region closest to the user,
+   get its connection string, and set it as `DATABASE_URL`.
+3. **Neon API key** (if the user already gave one): create the project yourself:
+   ```bash
+   curl -s -X POST https://console.neon.tech/api/v2/projects \
+     -H "Authorization: Bearer $NEON_API_KEY" -H "content-type: application/json" \
+     -d '{"project":{"name":"ai-secretary","region_id":"aws-eu-central-1"}}'
+   # → .connection_uris[0].connection_uri → DATABASE_URL
+   ```
+4. **None of the above works**: add **item 5** to the Step 1 message and ask the user for a connection string.
+   Do this up front, in the same message, never after the deploy.
+
+## Step 1 — collect the inputs
 
 Send this (adapted to the user's language) and wait for the answers:
 
@@ -45,6 +67,9 @@ Send this (adapted to the user's language) and wait for the answers:
 > 3. **Ключ OpenRouter** — https://openrouter.ai/keys, вигляду `sk-or-v1-…` (на рахунку мають бути кошти)
 > 4. **Google Client ID і Client Secret** — для календаря й пошти. Якщо ще немає, скажіть — дам покрокову
 >    інструкцію на 5 хвилин.
+>
+> 5. *(only if Step 0 fell through to path 4)* **Рядок підключення до бази** — безкоштовно на https://neon.tech →
+>    Create project → Connect → скопіюйте `postgresql://…?sslmode=require`. Це хвилина; без бази бот не запуститься.
 >
 > Також: у вас **Google Workspace** (пошта компанії) чи **звичайний Gmail**?
 
@@ -75,8 +100,8 @@ On a failed check:
 
    If the tools can't create it, hand the user the **Deploy with Vercel** button from README.md. It asks for the
    variables and offers Neon.
-2. **Add Neon Postgres**: Marketplace → Neon, free plan. It sets `DATABASE_URL`.
-   - Dashboard path: project → Storage → Create Database → Neon.
+2. **Database**: by the path chosen in Step 0. With a connection string (paths 2–4), set it as `DATABASE_URL`
+   (Production). Check that the project has `DATABASE_URL` **before** deploying.
    - The schema is created automatically on the first request.
 3. **Set Production variables:**
    - `TELEGRAM_BOT_TOKEN`
