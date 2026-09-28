@@ -5,8 +5,9 @@ import { helpText } from "./bot/onboarding";
 import { getDraft, transition } from "./db/drafts";
 import { pruneSelfWrites } from "./db/selfWrites";
 import { getUserById } from "./db/users";
-import type { Env } from "./env";
-import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError } from "./google/oauth";
+import { type Env, gmailPushConfigured } from "./env";
+import { gmailSync, startGmailWatch } from "./google/gmailPush";
+import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope } from "./google/oauth";
 import { fullSync, incrementalSync, startWatch } from "./google/sync";
 import { logError } from "./lib/errors";
 import { transcribe } from "./stt/elevenlabs";
@@ -31,7 +32,9 @@ export type Job =
   /** Full window sync (after OAuth, daily). `notify` tells the owner the result. */
   | { type: "full_sync"; userId: number; notify?: boolean }
   /** Daily maintenance: renew the push channel when `renew`, then the full sync (safety net for lost pushes). */
-  | { type: "daily"; userId: number; renew: boolean };
+  | { type: "daily"; userId: number; renew: boolean }
+  /** Report emails that arrived since the last Gmail push. */
+  | { type: "gmail_sync"; userId: number };
 
 export const JOB_ATTEMPTS = 3;
 
@@ -77,6 +80,13 @@ export async function runJob(env: Env, job: Job): Promise<void> {
       if (job.renew) await startWatch(env, job.userId);
       await fullSync(env, job.userId);
       await pruneSelfWrites(env.db);
+      // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.
+      if (gmailPushConfigured(env) && (await hasGmailScope(env, job.userId))) {
+        await startGmailWatch(env, job.userId).catch((err) => logError(env, "gmail.watch", err, { userId: job.userId }));
+      }
+      return;
+    case "gmail_sync":
+      await gmailSync(env, job.userId);
       return;
   }
 }

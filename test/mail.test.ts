@@ -282,3 +282,97 @@ describe("Gmail agent", () => {
     expect(jobs.map((j) => j.body.type)).toEqual(["mail_parse"]);
   });
 });
+
+describe("instant new-mail notifications (Gmail push)", () => {
+  async function seedWatched(historyId = "100"): Promise<number> {
+    const userId = await seedOwner();
+    await db.query("INSERT INTO gmail_state (user_id, history_id, expiration, updated_at) VALUES ($1, $2, 0, 0)", [userId, historyId]);
+    return userId;
+  }
+
+  it("the push endpoint checks its token and queues a sync", async () => {
+    const userId = await seedWatched();
+    const { gmailPush } = await import("../src/app");
+    const { gmailPushToken } = await import("../src/google/gmailPush");
+    const { env, jobs } = testEnv(db);
+    const post = (token: string) =>
+      gmailPush(
+        new Request(`https://bot.test/api/gmail-push?token=${token}`, {
+          method: "POST",
+          body: JSON.stringify({ message: { data: Buffer.from(JSON.stringify({ emailAddress: "boss@acme.ua", historyId: 101 })).toString("base64") } }),
+        }),
+        env,
+      );
+    expect((await post("wrong")).status).toBe(403);
+    expect(jobs).toEqual([]);
+    expect((await post(gmailPushToken(env))).status).toBe(204);
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "gmail_sync", userId }]);
+  });
+
+  it("reports each new INBOX email once, as its own linked message, and advances the history id", async () => {
+    const userId = await seedWatched("100");
+    const writes: { method: string; path: string; body: any }[] = [];
+    const inbox = gmailRoutes(writes, { n1: gmailMessage("n1", { subject: "Нова пропозиція" }), n2: gmailMessage("n2") });
+    const calls = mockFetch([
+      (url) =>
+        url.pathname.endsWith("/history")
+          ? Response.json({
+              historyId: "105",
+              history: [
+                { messagesAdded: [{ message: { id: "n1", labelIds: ["INBOX", "UNREAD"] } }] },
+                { messagesAdded: [{ message: { id: "s1", labelIds: ["SENT"] } }, { message: { id: "n2", labelIds: ["INBOX"] } }] },
+              ],
+            })
+          : undefined,
+      inbox,
+    ]);
+    const { gmailSync } = await import("../src/google/gmailPush");
+    const { env } = testEnv(db);
+    expect(await gmailSync(env, userId)).toBe(2);
+    const notices = tgCalls(calls, "sendMessage").map((m) => String(m.text));
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toContain("📨 Новий лист");
+    expect(notices[0]).toContain("Нова пропозиція");
+    const history = calls.find((c) => c.url.includes("/history"))!;
+    expect(new URL(history.url).searchParams.get("startHistoryId")).toBe("100");
+    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
+    expect(rows[0]!.history_id).toBe("105");
+    const { rows: links } = await db.query("SELECT ref_id FROM message_links ORDER BY ref_id");
+    expect(links).toEqual([{ ref_id: "n1" }, { ref_id: "n2" }]);
+  });
+
+  it("starts over when Gmail no longer has the stored history (404)", async () => {
+    const userId = await seedWatched("1");
+    mockFetch([
+      (url) => (url.pathname.endsWith("/history") ? new Response("gone", { status: 404 }) : undefined),
+      (url) => (url.pathname.endsWith("/watch") ? Response.json({ historyId: "900", expiration: String(Date.now() + 7 * 86400_000) }) : undefined),
+    ]);
+    const { gmailSync } = await import("../src/google/gmailPush");
+    const { env } = testEnv(db);
+    env.GMAIL_PUBSUB_TOPIC = "projects/p/topics/gmail";
+    expect(await gmailSync(env, userId)).toBe(0);
+    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
+    expect(rows[0]!.history_id).toBe("900");
+  });
+
+  it("the daily job renews the Gmail watch when push is configured", async () => {
+    const userId = await seedWatched("100");
+    let watched: any = null;
+    mockFetch([
+      (url) => (url.pathname.endsWith("/calendars/primary/events") ? Response.json({ items: [], nextSyncToken: "t" }) : undefined),
+      (url, init) => {
+        if (!url.pathname.endsWith("/gmail/v1/users/me/watch")) return undefined;
+        watched = JSON.parse(init.bodyText);
+        return Response.json({ historyId: "200", expiration: String(Date.now() + 7 * 86400_000) });
+      },
+    ]);
+    const { env, jobs } = testEnv(db);
+    env.GMAIL_PUBSUB_TOPIC = "projects/p/topics/gmail";
+    jobs.push({ body: { type: "daily", userId, renew: false } });
+    await runJobs(env, jobs);
+    expect(watched).toEqual({ topicName: "projects/p/topics/gmail", labelIds: ["INBOX"], labelFilterBehavior: "include" });
+    // Renewing keeps the stored position, so emails between the two watches are not lost.
+    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
+    expect(rows[0]!.history_id).toBe("100");
+  });
+});

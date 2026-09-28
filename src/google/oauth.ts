@@ -171,5 +171,6 @@ export async function getAccessToken(env: Env, userId: number, forceRefresh = fa
 /** Removes stored credentials (after revocation or on reconnect failure). */
 export async function forgetGoogleAuth(env: Env, userId: number): Promise<void> {
   await exec(env.db, "DELETE FROM watch_channels WHERE user_id = $1", [userId]);
+  await exec(env.db, "DELETE FROM gmail_state WHERE user_id = $1", [userId]);
   await exec(env.db, "DELETE FROM google_auth WHERE user_id = $1", [userId]);
 }

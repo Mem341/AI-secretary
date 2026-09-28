@@ -42,7 +42,21 @@ export async function pgliteDb(): Promise<Db> {
   return db;
 }
 
-const TABLES = ["errors", "summaries", "recordings", "reminders", "drafts", "meetings", "watch_channels", "google_auth", "contacts", "users"];
+const TABLES = [
+  "errors",
+  "summaries",
+  "recordings",
+  "reminders",
+  "drafts",
+  "meetings",
+  "watch_channels",
+  "gmail_state",
+  "google_auth",
+  "contacts",
+  "message_links",
+  "recent_writes",
+  "users",
+];
 
 export async function resetDb(db: Db): Promise<void> {
   await db.query(`TRUNCATE ${TABLES.join(", ")} RESTART IDENTITY CASCADE`);

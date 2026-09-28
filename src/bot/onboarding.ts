@@ -1,4 +1,5 @@
-import { type Env, zoomConfigured } from "../env";
+import { type Env, gmailPushConfigured, zoomConfigured } from "../env";
+import { gmailPushEndpoint } from "../google/gmailPush";
 import { durationOf, formatOf, getUserById, type MeetingFormat, modelOf, updateUser, type User } from "../db/users";
 import { connectLink, hasGmailScope, hasGoogleAuth } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
@@ -247,6 +248,9 @@ export async function showSettings(env: Env, user: User): Promise<void> {
     `Google Calendar: ${connected ? "✅ підключено" : "❌ не підключено"}`,
     `Gmail: ${!connected ? "—" : gmail ? "✅ підключено" : "⚠️ потрібно перепідключити календар, щоб дати доступ"}`,
   ];
+  if (gmailPushConfigured(env)) {
+    lines.push("", `Адреса push-підписки Pub/Sub для сповіщень про нові листи (секретна, не публікуйте):\n<code>${esc(gmailPushEndpoint(env))}</code>`);
+  }
   const keyboard: InlineKeyboard = [
     [
       { text: "Імʼя", callback_data: "o:set:name" },
