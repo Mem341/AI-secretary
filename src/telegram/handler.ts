@@ -6,56 +6,38 @@ import {
   showSettings,
   startOnboarding,
 } from "../bot/onboarding";
+import { all } from "../db/client";
 import { cancelInputDrafts } from "../db/drafts";
-import { allowUser, deactivateUser, getUserByTgId, listUsers, type Role, updateUser, type User } from "../db/users";
-import { isAdmin, type Env } from "../env";
+import { deleteContact, ensureUser, listContacts, saveContact, updateUser, type User } from "../db/users";
+import { isOwner, type Env } from "../env";
 import { hasGoogleAuth } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
 import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
 import type { TgCallbackQuery, TgMessage, TgMessageOrigin, TgUpdate, TgUser } from "./types";
 
 /**
- * Resolves the sender against the whitelist (spec section 2). Administrators from ADMIN_TG_IDS are
- * whitelisted automatically as owners.
+ * The bot serves exactly one person: OWNER_TELEGRAM_ID. Messages and button presses from anyone else are
+ * ignored without a reply, so strangers learn nothing about the bot.
  */
 async function authorize(env: Env, from: TgUser): Promise<User | null> {
-  let user = await getUserByTgId(env.DB, from.id);
-  if (!user && isAdmin(env, from.id)) {
-    await allowUser(env.DB, from.id, "owner");
-    user = await getUserByTgId(env.DB, from.id);
-  }
-  if (!user?.active) return null;
-  const username = from.username ?? null;
-  if (username !== user.tg_username) {
-    await updateUser(env.DB, user.id, { tg_username: username });
-    user.tg_username = username;
-  }
-  return user;
+  if (from.is_bot || !isOwner(env, from.id)) return null;
+  return ensureUser(env.db, from.id, from.username ?? null);
 }
 
 export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
   if (update.callback_query) return handleCallback(env, update.callback_query);
   const msg = update.message;
-  if (!msg?.from || msg.chat.type !== "private" || msg.from.is_bot) return;
+  if (!msg?.from || msg.chat.type !== "private") return;
 
   const user = await authorize(env, msg.from);
   if (!user) {
-    await new Telegram(env).send(
-      msg.chat.id,
-      `⛔ Доступ обмежено. Зверніться до адміністратора пілоту.\nВаш Telegram ID: <code>${msg.from.id}</code>`,
-    );
+    console.warn(`Ignored message from non-owner ${msg.from.id}`);
     return;
   }
 
   const text = msg.text?.trim() ?? "";
   if (text.startsWith("/")) return handleCommand(env, user, msg, text);
   if (await handleDialogMessage(env, user, msg)) return;
-
-  const tg = new Telegram(env);
-  if (user.role !== "owner") {
-    await tg.send(user.tg_id, helpText(user));
-    return;
-  }
   if (!user.full_name) {
     await startOnboarding(env, user);
     return;
@@ -115,7 +97,7 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
       return;
     }
     await tg.typing(msg.chat.id);
-    await env.JOBS.send({
+    await env.jobs.send({
       type: "voice",
       userId: user.id,
       chatId: msg.chat.id,
@@ -135,6 +117,8 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
   if (text) await handleOwnerText(env, user, msg.chat.id, text, "text", msg.reply_to_message?.message_id ?? null);
 }
 
+const EMAIL_RE = /^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/;
+
 async function handleCommand(env: Env, user: User, msg: TgMessage, text: string): Promise<void> {
   const tg = new Telegram(env);
   const [rawCmd, ...args] = text.split(/\s+/);
@@ -142,7 +126,7 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
 
   // Any command interrupts a dialog step.
   if (user.dialog_state && cmd !== "/start") {
-    await updateUser(env.DB, user.id, { dialog_state: null });
+    await updateUser(env.db, user.id, { dialog_state: null });
     user.dialog_state = null;
   }
 
@@ -150,91 +134,69 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
     case "/start":
       await startOnboarding(env, user);
       return;
-    case "/help":
-      await tg.send(user.tg_id, helpText(user));
-      return;
     case "/settings":
       await showSettings(env, user);
       return;
     case "/cancel":
-      await cancelInputDrafts(env.DB, user.id);
+      await cancelInputDrafts(env.db, user.id);
       await tg.send(user.tg_id, "Гаразд, скасовано.", { removeKeyboard: true });
       return;
     case "/new":
-      if (user.role !== "owner") break;
-      if (!(await hasGoogleAuth(env, user.id))) {
+      if (!user.full_name || !(await hasGoogleAuth(env, user.id))) {
         await startOnboarding(env, user);
         return;
       }
+      await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.");
+      return;
+    case "/contacts": {
+      const contacts = await listContacts(env.db, 100);
       await tg.send(
         user.tg_id,
-        "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.",
+        contacts.length
+          ? `📇 <b>Адресна книга</b>\n${contacts.map((c) => `• ${esc(c.name)} — ${esc(c.email)}`).join("\n")}`
+          : "Адресна книга порожня. Вона поповнюється учасниками створених зустрічей або командою\n<code>/contact Імʼя Прізвище email</code>",
       );
       return;
-  }
-
-  if (isAdmin(env, user.tg_id) && (await handleAdminCommand(env, user, cmd, args))) return;
-  await tg.send(user.tg_id, helpText(user));
-}
-
-/** /allow <tg_id> [owner|member], /deny <tg_id>, /users, /errors — whitelist and diagnostics (spec section 2). */
-async function handleAdminCommand(env: Env, admin: User, cmd: string, args: string[]): Promise<boolean> {
-  const tg = new Telegram(env);
-  switch (cmd) {
-    case "/allow": {
-      const tgId = Number(args[0]);
-      const role = (args[1] ?? "owner") as Role;
-      if (!Number.isSafeInteger(tgId) || tgId <= 0 || !["owner", "member"].includes(role)) {
-        await tg.send(admin.tg_id, "Формат: <code>/allow &lt;telegram_id&gt; [owner|member]</code>");
-        return true;
+    }
+    case "/contact": {
+      const email = args.at(-1) ?? "";
+      const name = args.slice(0, -1).join(" ").trim();
+      if (!EMAIL_RE.test(email) || !name) {
+        await tg.send(user.tg_id, "Формат: <code>/contact Імʼя Прізвище email</code>\nВидалити: <code>/contact_del email</code>");
+        return;
       }
-      await allowUser(env.DB, tgId, role);
-      await tg.send(admin.tg_id, `✅ ${tgId} додано як ${role === "owner" ? "власника (керівника)" : "учасника"}. Нехай натисне /start.`);
-      return true;
+      await saveContact(env.db, name, email);
+      await tg.send(user.tg_id, `✅ Збережено: ${esc(name)} — ${esc(email.toLowerCase())}`);
+      return;
     }
-    case "/deny": {
-      const tgId = Number(args[0]);
-      const ok = Number.isSafeInteger(tgId) && (await deactivateUser(env.DB, tgId));
-      await tg.send(admin.tg_id, ok ? `⛔ ${tgId} вимкнено.` : "Користувача не знайдено.");
-      return true;
-    }
-    case "/users": {
-      const users = await listUsers(env.DB);
-      const connected = new Set(
-        (await env.DB.prepare("SELECT user_id FROM google_auth").all<{ user_id: number }>()).results.map((r) => r.user_id),
-      );
-      const lines = users.map(
-        (u) =>
-          `${u.active ? "🟢" : "⚪️"} <code>${u.tg_id}</code> ${esc(u.full_name ?? "—")} · ${u.role}` +
-          `${u.email ? ` · ${esc(u.email)}` : ""}${u.role === "owner" ? (connected.has(u.id) ? " · 📅" : " · без календаря") : ""}`,
-      );
-      await tg.send(admin.tg_id, lines.length ? lines.join("\n") : "Користувачів немає.");
-      return true;
+    case "/contact_del": {
+      const ok = !!args[0] && (await deleteContact(env.db, args[0]));
+      await tg.send(user.tg_id, ok ? "🗑 Видалено." : "Такого email в адресній книзі немає.");
+      return;
     }
     case "/errors": {
-      const { results } = await env.DB.prepare("SELECT ts, scope, user_id, message FROM errors ORDER BY ts DESC LIMIT 10")
-        .all<{ ts: number; scope: string; user_id: number | null; message: string }>();
-      const lines = results.map(
+      const rows = await all<{ ts: number; scope: string; message: string }>(
+        env.db,
+        "SELECT ts, scope, message FROM errors ORDER BY ts DESC LIMIT 10",
+      );
+      const lines = rows.map(
         (e) => `<code>${toKyivDate(new Date(e.ts))} ${formatTime(new Date(e.ts))}</code> ${esc(e.scope)}: ${esc(e.message.slice(0, 200))}`,
       );
-      await tg.send(admin.tg_id, lines.length ? lines.join("\n\n") : "Помилок немає 🎉");
-      return true;
+      await tg.send(user.tg_id, lines.length ? lines.join("\n\n") : "Помилок немає 🎉");
+      return;
     }
   }
-  return false;
+  await tg.send(user.tg_id, helpText());
 }
 
 async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   const tg = new Telegram(env);
   const user = await authorize(env, cq.from);
-  if (!user) {
-    await tg.answerCallback(cq.id, "Доступ обмежено");
-    return;
-  }
+  if (!user) return;
   const [kind, a = "", b = ""] = (cq.data ?? "").split(":");
   let toast: string | undefined;
   try {
-    if (kind === "d" && user.role === "owner") toast = await handleCardCallback(env, user, a, b);
+    if (kind === "d") toast = await handleCardCallback(env, user, a, b);
     else if (kind === "o") toast = await handleDialogCallback(env, user, a, b);
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);

@@ -14,7 +14,7 @@ import {
   transition,
 } from "../db/drafts";
 import { listMeetingsBetween, markMeetingSource, upsertMeeting } from "../db/meetings";
-import { getUserById, listDirectory, type User } from "../db/users";
+import { getUserById, listContacts, saveContact, type User } from "../db/users";
 import { Calendar, type GEvent } from "../google/calendar";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGoogleAuth } from "../google/oauth";
 import { eventToChange } from "../google/sync";
@@ -74,30 +74,30 @@ export async function handleOwnerText(
 ): Promise<void> {
   const tg = new Telegram(env);
   const target =
-    (replyToMessageId ? await findDraftByMessage(env.DB, user.id, replyToMessageId) : null) ??
-    (await findInputDraft(env.DB, user.id));
+    (replyToMessageId ? await findDraftByMessage(env.db, user.id, replyToMessageId) : null) ??
+    (await findInputDraft(env.db, user.id));
 
   if (target?.state === "clarify") {
-    await appendSource(env.DB, target.id, `Уточнення: ${text}`, false);
-    if (await transition(env.DB, target.id, ["clarify"], "parsing")) {
+    await appendSource(env.db, target.id, `Уточнення: ${text}`, false);
+    if (await transition(env.db, target.id, ["clarify"], "parsing")) {
       await tg.typing(chatId);
-      await env.JOBS.send({ type: "parse", draftId: target.id });
+      await env.jobs.send({ type: "parse", draftId: target.id });
     }
     return;
   }
   if (target && (target.state === "editing" || target.state === "pending")) {
-    await appendSource(env.DB, target.id, `Правка: ${text}`, true);
-    if (await transition(env.DB, target.id, ["editing", "pending"], "parsing")) {
+    await appendSource(env.db, target.id, `Правка: ${text}`, true);
+    if (await transition(env.db, target.id, ["editing", "pending"], "parsing")) {
       await tg.typing(chatId);
-      await env.JOBS.send({ type: "edit", draftId: target.id, instruction: text });
+      await env.jobs.send({ type: "edit", draftId: target.id, instruction: text });
     }
     return;
   }
 
   if (!(await requireCalendar(env, user, chatId))) return;
   const placeholder = await tg.send(chatId, "⏳ Готую картку зустрічі…");
-  const draftId = await createDraft(env.DB, user.id, sourceType, text, "parsing", placeholder.message_id);
-  await env.JOBS.send({ type: "parse", draftId });
+  const draftId = await createDraft(env.db, user.id, sourceType, text, "parsing", placeholder.message_id);
+  await env.jobs.send({ type: "parse", draftId });
 }
 
 /** A forwarded message or a screenshot: collected into a batch, processed after a quiet period. */
@@ -110,7 +110,7 @@ export async function handleBatchInput(
   delaySeconds: number,
 ): Promise<void> {
   if (!(await requireCalendar(env, user, chatId))) return;
-  const { id, seq } = await appendToBatch(env.DB, user.id, sourceType, line);
+  const { id, seq } = await appendToBatch(env.db, user.id, sourceType, line);
   if (seq === 1) {
     const msg = await new Telegram(env).send(
       chatId,
@@ -118,9 +118,9 @@ export async function handleBatchInput(
         ? `📥 Збираю переписку… Картку покажу через ${FORWARD_DEBOUNCE_S} с після останнього пересланого повідомлення.`
         : "📥 Отримав скріншот, розбираю…",
     );
-    await setCardMessage(env.DB, id, msg.message_id);
+    await setCardMessage(env.db, id, msg.message_id);
   }
-  await env.JOBS.send({ type: "batch", draftId: id, seq }, { delaySeconds });
+  await env.jobs.send({ type: "batch", draftId: id, seq }, { delaySeconds });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -128,9 +128,9 @@ export async function handleBatchInput(
 
 export async function processBatch(env: Env, draftId: string, seq: number): Promise<void> {
   // Only the job carrying the latest sequence number proceeds; earlier ones see a newer seq and stop.
-  if (!(await transition(env.DB, draftId, ["collecting"], "parsing", { batchSeq: seq }))) {
+  if (!(await transition(env.db, draftId, ["collecting"], "parsing", { batchSeq: seq }))) {
     // A retry of this same job after the state already moved on is still allowed to finish the parse.
-    const draft = await getDraft(env.DB, draftId);
+    const draft = await getDraft(env.db, draftId);
     if (draft?.state !== "parsing" || draft.batch_seq !== seq) return;
   }
   await parseDraft(env, draftId);
@@ -162,11 +162,11 @@ async function buildUserContent(env: Env, draft: Draft): Promise<ContentPart[]> 
 
 /** Builds the card from the draft's sources and shows it (or asks a clarifying question). */
 export async function parseDraft(env: Env, draftId: string, now = new Date()): Promise<void> {
-  const draft = await getDraft(env.DB, draftId);
+  const draft = await getDraft(env.db, draftId);
   if (!draft || draft.state !== "parsing") return;
-  const user = await getUserById(env.DB, draft.user_id);
+  const user = await getUserById(env.db, draft.user_id);
   if (!user) return;
-  const directory = await listDirectory(env.DB);
+  const directory = await listContacts(env.db);
   const raw = await chatJson(env, env.LLM_MODEL, [
     { role: "system", content: cardSystemPrompt(user, directory, now) },
     { role: "user", content: await buildUserContent(env, draft) },
@@ -180,11 +180,11 @@ export async function parseDraft(env: Env, draftId: string, now = new Date()): P
 }
 
 export async function editDraft(env: Env, draftId: string, instruction: string, now = new Date()): Promise<void> {
-  const draft = await getDraft(env.DB, draftId);
+  const draft = await getDraft(env.db, draftId);
   if (!draft?.card || draft.state !== "parsing") return;
-  const user = await getUserById(env.DB, draft.user_id);
+  const user = await getUserById(env.db, draft.user_id);
   if (!user) return;
-  const directory = await listDirectory(env.DB);
+  const directory = await listContacts(env.db);
   const raw = await chatJson(env, env.LLM_MODEL, [
     { role: "system", content: editSystemPrompt(user, directory, now) },
     { role: "user", content: `Картка:\n${cardForEdit(draft.card)}\n\nПравка: ${instruction}` },
@@ -200,12 +200,12 @@ export async function editDraft(env: Env, draftId: string, instruction: string, 
 
 async function askClarification(env: Env, user: User, draft: Draft, card: Card): Promise<void> {
   const question = card.clarify_question ?? "Не зовсім зрозумів. Уточніть, будь ласка: з ким зустріч і коли?";
-  await saveCard(env.DB, draft.id, card, "clarify");
+  await saveCard(env.db, draft.id, card, "clarify");
   const tg = new Telegram(env);
   const html = `❓ ${esc(question)}\n\n<i>Відповідайте звичайним повідомленням.</i>`;
   const keyboard: InlineKeyboard = [[{ text: "✖️ Скасувати", callback_data: `d:${draft.id}:x` }]];
   if (draft.card_message_id) await tg.edit(user.tg_id, draft.card_message_id, html, keyboard);
-  else await setCardMessage(env.DB, draft.id, (await tg.send(user.tg_id, html, { keyboard })).message_id);
+  else await setCardMessage(env.db, draft.id, (await tg.send(user.tg_id, html, { keyboard })).message_id);
 }
 
 function cardKeyboard(draftId: string, card: Card, now: Date): InlineKeyboard {
@@ -237,9 +237,9 @@ export async function presentCard(env: Env, user: User, draft: Draft, card: Card
   let conflicts: Awaited<ReturnType<typeof listMeetingsBetween>> = [];
   if (start) {
     card.slots = undefined;
-    conflicts = await listMeetingsBetween(env.DB, user.id, start.getTime(), cardEnd(card)!.getTime());
+    conflicts = await listMeetingsBetween(env.db, user.id, start.getTime(), cardEnd(card)!.getTime());
   } else {
-    const busy = await listMeetingsBetween(env.DB, user.id, now.getTime(), now.getTime() + 14 * DAY);
+    const busy = await listMeetingsBetween(env.db, user.id, now.getTime(), now.getTime() + 14 * DAY);
     card.slots = findFreeSlots({
       now,
       durationMin: card.duration_min,
@@ -259,7 +259,7 @@ export async function presentCard(env: Env, user: User, draft: Draft, card: Card
     }
   }
   if (!messageId) messageId = (await tg.send(user.tg_id, html, { keyboard })).message_id;
-  await saveCard(env.DB, draft.id, card, "pending", messageId);
+  await saveCard(env.db, draft.id, card, "pending", messageId);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -288,11 +288,13 @@ export async function createFromDraft(env: Env, user: User, draft: Draft, card: 
   const change = eventToChange(event);
   let meetingId: string | null = null;
   if (change.kind === "upsert") {
-    meetingId = await upsertMeeting(env.DB, user.id, event.id, change.meeting, "bot");
+    meetingId = await upsertMeeting(env.db, user.id, event.id, change.meeting, "bot");
     // A push may have mirrored the event first, as "calendar".
-    await markMeetingSource(env.DB, meetingId, "bot");
+    await markMeetingSource(env.db, meetingId, "bot");
   }
-  await markCreated(env.DB, draft.id, meetingId);
+  await markCreated(env.db, draft.id, meetingId);
+  // The address book learns names and emails from every created meeting.
+  for (const a of card.attendees) if (a.name && a.email) await saveContact(env.db, a.name, a.email);
   return event;
 }
 
@@ -315,12 +317,12 @@ export async function handleCardCallback(
   now = new Date(),
 ): Promise<string | undefined> {
   const tg = new Telegram(env);
-  const draft = await getDraft(env.DB, draftId);
+  const draft = await getDraft(env.db, draftId);
   if (!draft || draft.user_id !== user.id) return "Картка не знайдена";
   const messageId = draft.card_message_id;
 
   if (action === "x") {
-    if (!(await transition(env.DB, draft.id, ["pending", "editing", "clarify"], "cancelled"))) return "Картка вже неактуальна";
+    if (!(await transition(env.db, draft.id, ["pending", "editing", "clarify"], "cancelled"))) return "Картка вже неактуальна";
     if (messageId) await tg.edit(user.tg_id, messageId, "✖️ Скасовано. Подію не створено.");
     return "Скасовано";
   }
@@ -328,7 +330,7 @@ export async function handleCardCallback(
   if (!draft.card) return "Картка ще готується";
 
   if (action === "e") {
-    if (!(await transition(env.DB, draft.id, ["pending", "editing"], "editing"))) return "Картка вже неактуальна";
+    if (!(await transition(env.db, draft.id, ["pending", "editing"], "editing"))) return "Картка вже неактуальна";
     await tg.send(user.tg_id, "✏️ Напишіть, що змінити — наприклад: «перенеси на 16:00, прибери Олега, зроби онлайн».", {
       replyTo: messageId ?? undefined,
     });
@@ -355,9 +357,9 @@ export async function handleCardCallback(
       };
     }
     if (!cardStart(card)) return "Спочатку оберіть час";
-    if (!(await transition(env.DB, draft.id, ["pending", "editing"], "creating"))) return "Вже обробляється";
+    if (!(await transition(env.db, draft.id, ["pending", "editing"], "creating"))) return "Вже обробляється";
     if (!(await hasGoogleAuth(env, user.id))) {
-      await transition(env.DB, draft.id, ["creating"], "pending");
+      await transition(env.db, draft.id, ["creating"], "pending");
       await tg.send(user.tg_id, "Календар не підключено.", {
         keyboard: [[{ text: "🔗 Підключити Google Calendar", url: await connectLink(env, user.id) }]],
       });
@@ -370,7 +372,7 @@ export async function handleCardCallback(
       else await tg.send(user.tg_id, createdHtml(card, event, now), { keyboard });
       return "Створено";
     } catch (err) {
-      await transition(env.DB, draft.id, ["creating"], "pending");
+      await transition(env.db, draft.id, ["creating"], "pending");
       if (err instanceof GoogleAuthRevokedError) {
         await forgetGoogleAuth(env, user.id);
         await tg.send(user.tg_id, "⚠️ Доступ до Google Calendar втрачено. Підключіть календар і натисніть «Створити» ще раз.", {

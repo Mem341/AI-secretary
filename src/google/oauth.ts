@@ -1,3 +1,4 @@
+import { exec, one } from "../db/client";
 import type { Env } from "../env";
 import { decrypt, encrypt, fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { expectOk, fetchWithRetry, HttpError } from "../lib/http";
@@ -13,13 +14,13 @@ export class GoogleAuthRevokedError extends Error {
 }
 
 export function redirectUri(env: Env): string {
-  return `${env.PUBLIC_URL}/oauth/google/callback`;
+  return `${env.PUBLIC_URL}/api/oauth/callback`;
 }
 
-/** Link sent to the owner in Telegram; opens our /oauth/google/start which redirects to Google. */
+/** Link sent to the owner in Telegram; opens /api/oauth/start which redirects to Google. */
 export async function connectLink(env: Env, userId: number): Promise<string> {
   const state = await signToken(env.ENCRYPTION_KEY, { uid: userId }, STATE_TTL_MS);
-  return `${env.PUBLIC_URL}/oauth/google/start?state=${encodeURIComponent(state)}`;
+  return `${env.PUBLIC_URL}/api/oauth/start?state=${encodeURIComponent(state)}`;
 }
 
 export function googleAuthUrl(env: Env, state: string): string {
@@ -83,33 +84,35 @@ export async function completeAuth(env: Env, userId: number, code: string): Prom
   if (!tokens.refresh_token) throw new Error("Google did not return a refresh token");
   const email = emailFromIdToken(tokens.id_token);
   const now = Date.now();
-  await env.DB.prepare(
+  await exec(
+    env.db,
     `INSERT INTO google_auth (user_id, google_email, refresh_token_enc, access_token, expires_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (user_id) DO UPDATE SET google_email = excluded.google_email, refresh_token_enc = excluded.refresh_token_enc,
-       access_token = excluded.access_token, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
-  )
-    .bind(
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (user_id) DO UPDATE SET google_email = EXCLUDED.google_email, refresh_token_enc = EXCLUDED.refresh_token_enc,
+       access_token = EXCLUDED.access_token, expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at`,
+    [
       userId,
       email,
       await encrypt(env.ENCRYPTION_KEY, tokens.refresh_token),
       await encrypt(env.ENCRYPTION_KEY, tokens.access_token),
       now + tokens.expires_in * 1000,
       now,
-    )
-    .run();
+    ],
+  );
   return { email, scope: tokens.scope ?? "" };
 }
 
 export async function hasGoogleAuth(env: Env, userId: number): Promise<boolean> {
-  return !!(await env.DB.prepare("SELECT 1 FROM google_auth WHERE user_id = ?").bind(userId).first());
+  return !!(await one(env.db, "SELECT 1 FROM google_auth WHERE user_id = $1", [userId]));
 }
 
 /** Returns a valid access token, refreshing it when it expires within a minute. */
 export async function getAccessToken(env: Env, userId: number, forceRefresh = false): Promise<string> {
-  const row = await env.DB.prepare("SELECT refresh_token_enc, access_token, expires_at FROM google_auth WHERE user_id = ?")
-    .bind(userId)
-    .first<{ refresh_token_enc: string; access_token: string | null; expires_at: number | null }>();
+  const row = await one<{ refresh_token_enc: string; access_token: string | null; expires_at: number | null }>(
+    env.db,
+    "SELECT refresh_token_enc, access_token, expires_at FROM google_auth WHERE user_id = $1",
+    [userId],
+  );
   if (!row) throw new GoogleAuthRevokedError(userId);
   if (!forceRefresh && row.access_token && (row.expires_at ?? 0) > Date.now() + 60_000) {
     return decrypt(env.ENCRYPTION_KEY, row.access_token);
@@ -128,16 +131,17 @@ export async function getAccessToken(env: Env, userId: number, forceRefresh = fa
     }
     throw err;
   }
-  await env.DB.prepare("UPDATE google_auth SET access_token = ?, expires_at = ?, updated_at = ? WHERE user_id = ?")
-    .bind(await encrypt(env.ENCRYPTION_KEY, tokens.access_token), Date.now() + tokens.expires_in * 1000, Date.now(), userId)
-    .run();
+  await exec(env.db, "UPDATE google_auth SET access_token = $1, expires_at = $2, updated_at = $3 WHERE user_id = $4", [
+    await encrypt(env.ENCRYPTION_KEY, tokens.access_token),
+    Date.now() + tokens.expires_in * 1000,
+    Date.now(),
+    userId,
+  ]);
   return tokens.access_token;
 }
 
 /** Removes stored credentials (after revocation or on reconnect failure). */
 export async function forgetGoogleAuth(env: Env, userId: number): Promise<void> {
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM watch_channels WHERE user_id = ?").bind(userId),
-    env.DB.prepare("DELETE FROM google_auth WHERE user_id = ?").bind(userId),
-  ]);
+  await exec(env.db, "DELETE FROM watch_channels WHERE user_id = $1", [userId]);
+  await exec(env.db, "DELETE FROM google_auth WHERE user_id = $1", [userId]);
 }

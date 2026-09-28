@@ -7,7 +7,7 @@ export function toBase64Url(bytes: Uint8Array): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export function fromBase64Url(s: string): Uint8Array {
+export function fromBase64Url(s: string): Uint8Array<ArrayBuffer> {
   const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
@@ -58,7 +58,7 @@ export async function signToken(secret: string, data: Record<string, unknown>, t
 export async function verifyToken<T extends Record<string, unknown>>(secret: string, token: string): Promise<T | null> {
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
-  let sigBytes: Uint8Array;
+  let sigBytes: Uint8Array<ArrayBuffer>;
   try {
     sigBytes = fromBase64Url(sig);
   } catch {
