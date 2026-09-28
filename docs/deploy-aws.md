@@ -30,8 +30,9 @@ Postgres із публічним доступом теж підійде — вк
 - Акаунт AWS і налаштований AWS CLI (`aws sts get-caller-identity` відповідає без помилки).
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
   (Homebrew, MSI для Windows або zip-інсталятор для Linux) і Node.js 22.
-- Три значення: токен бота (@BotFather), ваш числовий Telegram ID (@userinfobot), ключ OpenRouter.
-- Рядок підключення Postgres — безкоштовна база на [neon.tech](https://neon.tech).
+- Чотири речі з [docs/what-you-need.md](what-you-need.md): токен бота, ваш числовий Telegram ID, ключ OpenRouter,
+  Google Client ID і Client Secret.
+- Рядок підключення Postgres — безкоштовна база на [neon.tech](https://neon.tech) → Create project → Connect.
 
 ## Розгортання
 
@@ -48,16 +49,16 @@ sam deploy
 1. Візьміть `FunctionUrl` з виводу (`aws cloudformation describe-stacks --stack-name ai-secretary`).
 2. Відкрийте цю адресу — відкриється сторінка налаштування: вона сама підключить Telegram-бота й покаже,
    що лишилось (Google, голосові, Zoom, сповіщення про пошту).
-3. Для Google візьміть `GoogleRedirectUri` з виводу, створіть OAuth-клієнт за інструкцією на сторінці,
-   додайте `GoogleClientId`/`GoogleClientSecret` у `samconfig.toml` і знову `sam deploy`.
+3. Візьміть `GoogleRedirectUri` з виводу й додайте його в Google-клієнт: Clients → Authorized redirect URIs → Save.
 4. Напишіть боту `/start`.
 
 Оновлення: `git pull && npm ci && npm run build:aws && cd aws && sam deploy`. Схема бази оновлюється сама.
 
 ## Параметри
 
-Обовʼязкові: `OwnerTelegramId`, `TelegramBotToken`, `OpenRouterApiKey`, `DatabaseUrl`.
-Необовʼязкові: `GoogleClientId`, `GoogleClientSecret`, `ElevenLabsApiKey`, `ZoomAccountId`, `ZoomClientId`,
+Обовʼязкові: `OwnerTelegramId`, `TelegramBotToken`, `OpenRouterApiKey`, `GoogleClientId`, `GoogleClientSecret`,
+`DatabaseUrl`.
+Необовʼязкові: `ElevenLabsApiKey` (голосові), `ZoomAccountId`, `ZoomClientId`,
 `ZoomClientSecret`, `GmailPubsubTopic`, `LlmModel`, `PublicUrl` (свій домен), `EncryptionKey`, `CronSecret`.
 Значення за замовчуванням і пояснення — у `aws/template.yaml`.
 

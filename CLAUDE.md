@@ -13,7 +13,9 @@ The same code runs on both platforms; pick the skill by what the user asked for:
 - **AWS** (Amazon, Lambda) → `.claude/skills/deploy-aws/SKILL.md` (`/deploy-aws`); background: `docs/deploy-aws.md`.
 - Platform not named → ask once: Vercel (fastest, one button) or AWS (their own AWS account).
 
-Each skill lists exactly what to ask the owner. After any deploy, the `/api/setup` page registers the Telegram
+Each skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
+Google OAuth client ID + secret (plus a Neon URL on AWS) — validates them, and never asks about optional extras.
+The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, the `/api/setup` page registers the Telegram
 webhook and shows what is left to configure (Google, Gmail push, Zoom, voice).
 
 ## Layout
@@ -30,8 +32,9 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom, voice).
 ## Rules
 
 - The bot answers only `OWNER_TELEGRAM_ID`; keep every entry point behind that check.
-- Keep the deployment generic (no company-specific names or data): only `OWNER_TELEGRAM_ID`,
-  `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` (+ a Postgres URL) are required; new features must be optional or derived.
+- Keep the deployment generic (no company-specific names or data). The app boots with only `OWNER_TELEGRAM_ID`,
+  `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` (+ a Postgres URL); Google keys are collected at deploy but the app
+  must still start without them; new features must be optional or derived.
 - Anything that writes to the calendar or sends/removes mail goes through a confirmation card; read-only and
   easily reversible actions may run at once. Mark the bot's own Calendar writes with `markSelfWrite` first.
 - Keep the Vercel `api/*` files, `src/router.ts` and the docs' URLs in sync when adding an endpoint.

@@ -262,7 +262,7 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
   const redirect = googleRedirectUri(env);
   steps.push(
     googleConfigured(env)
-      ? { status: "ok", title: "Google Calendar і Gmail", details: `OAuth-клієнт задано. Redirect URI: ${code(redirect)}` }
+      ? { status: "ok", title: "Google Calendar і Gmail", details: `OAuth-клієнт задано. Додайте в нього цей Authorized redirect URI (Google Cloud Console → Clients → ваш клієнт): ${code(redirect)}` }
       : {
           status: "todo",
           title: "Google Calendar і Gmail",
