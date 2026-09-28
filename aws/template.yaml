@@ -18,10 +18,6 @@ Parameters:
     Type: String
     NoEcho: true
     Description: OpenRouter API key (https://openrouter.ai/keys).
-  DatabaseUrl:
-    Type: String
-    NoEcho: true
-    Description: Postgres connection string (e.g. a free Neon database, https://neon.tech).
   PublicUrl:
     Type: String
     Default: ""
@@ -29,6 +25,7 @@ Parameters:
   GoogleClientId:
     Type: String
     Default: ""
+    Description: Google OAuth client ID (docs/what-you-need.md, section 4).
   GoogleClientSecret:
     Type: String
     Default: ""
@@ -50,16 +47,39 @@ Parameters:
   LlmModel:
     Type: String
     Default: ""
-    Description: Optional OpenRouter model id (default google/gemini-2.5-flash). The owner can also change it in /settings.
+    Description: Optional OpenRouter model id (default google/gemini-2.5-flash).
+  OwnerName:
+    Type: String
+    Default: ""
+    Description: Optional. Empty = your Telegram name.
+  OwnerPosition:
+    Type: String
+    Default: ""
+  OwnerPhone:
+    Type: String
+    Default: ""
+  DefaultDurationMin:
+    Type: String
+    Default: "60"
+  DefaultFormat:
+    Type: String
+    Default: offline
+    AllowedValues: [offline, google_meet, zoom]
+  DefaultAddress:
+    Type: String
+    Default: ""
   EncryptionKey:
     Type: String
     Default: ""
     NoEcho: true
-    Description: Optional. Empty = derived from the bot token. Never change it once the calendar is connected.
+    Description: Optional. Empty = derived from the bot token. Changing it means reconnecting Google.
   CronSecret:
     Type: String
     Default: ""
     NoEcho: true
+
+Conditions:
+  HasPublicUrl: !Not [!Equals [!Ref PublicUrl, ""]]
 
 Globals:
   Function:
@@ -73,7 +93,6 @@ Globals:
         OWNER_TELEGRAM_ID: !Ref OwnerTelegramId
         TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
         OPENROUTER_API_KEY: !Ref OpenRouterApiKey
-        DATABASE_URL: !Ref DatabaseUrl
         PUBLIC_URL: !Ref PublicUrl
         GOOGLE_CLIENT_ID: !Ref GoogleClientId
         GOOGLE_CLIENT_SECRET: !Ref GoogleClientSecret
@@ -84,6 +103,12 @@ Globals:
         LLM_MODEL: !Ref LlmModel
         ENCRYPTION_KEY: !Ref EncryptionKey
         CRON_SECRET: !Ref CronSecret
+        OWNER_NAME: !Ref OwnerName
+        OWNER_POSITION: !Ref OwnerPosition
+        OWNER_PHONE: !Ref OwnerPhone
+        DEFAULT_DURATION_MIN: !Ref DefaultDurationMin
+        DEFAULT_FORMAT: !Ref DefaultFormat
+        DEFAULT_ADDRESS: !Ref DefaultAddress
 
 Resources:
   ApiFunction:
@@ -102,6 +127,10 @@ Resources:
       Handler: aws.cronHandler
       Description: Daily renewal of Google push channels and safety-net calendar sync.
       Timeout: 300
+      Environment:
+        Variables:
+          # The cron has no request to learn the address from: it gets the Function URL here.
+          PUBLIC_URL: !If [HasPublicUrl, !Ref PublicUrl, !GetAtt ApiFunctionUrl.FunctionUrl]
       Events:
         Daily:
           Type: ScheduleV2

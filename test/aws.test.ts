@@ -1,19 +1,9 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cronHandler, eventToRequest, type FunctionUrlEvent, handleHttp, setDatabase } from "../src/aws";
-import type { Db } from "../src/db/client";
-import { getSetting } from "../src/db/settings";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cronHandler, eventToRequest, type FunctionUrlEvent, handleHttp } from "../src/aws";
 import { loadConfig } from "../src/env";
-import { mockFetch, OWNER, pgliteDb, resetDb, tgCalls } from "./helpers";
+import { mockFetch, OWNER, resetInstance, tgCalls } from "./helpers";
 
-let db: Db;
-beforeAll(async () => {
-  db = await pgliteDb();
-});
-beforeEach(async () => {
-  await resetDb(db);
-  await db.query("DELETE FROM app_settings");
-  setDatabase(db);
-});
+beforeEach(() => resetInstance());
 afterEach(() => vi.restoreAllMocks());
 
 const HOST = "abc123.lambda-url.eu-central-1.on.aws";
@@ -21,7 +11,6 @@ const source = {
   OWNER_TELEGRAM_ID: String(OWNER),
   TELEGRAM_BOT_TOKEN: "111:AAA",
   OPENROUTER_API_KEY: "or",
-  DATABASE_URL: "postgresql://unused-in-tests",
 };
 
 function event(method: string, path: string, over: Partial<FunctionUrlEvent> = {}): FunctionUrlEvent {
@@ -52,13 +41,13 @@ describe("Lambda event → Request", () => {
 });
 
 describe("AWS handler", () => {
-  it("serves the setup page explaining a missing database", async () => {
-    const { response } = await handleHttp(event("GET", "/api/setup"), { ...source, DATABASE_URL: "" });
+  it("serves the setup page explaining missing variables", async () => {
+    const { response } = await handleHttp(event("GET", "/api/setup"), { ...source, OPENROUTER_API_KEY: "" });
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("DATABASE_URL");
+    expect(await response.text()).toContain("OPENROUTER_API_KEY");
   });
 
-  it("uses the Function URL as PUBLIC_URL and remembers it for the cron", async () => {
+  it("uses the Function URL as PUBLIC_URL; the cron gets it from the stack", async () => {
     mockFetch([
       (url) => (url.pathname.endsWith("/getWebhookInfo") ? Response.json({ ok: true, result: { url: `https://${HOST}/api/telegram` } }) : undefined),
     ]);
@@ -66,10 +55,9 @@ describe("AWS handler", () => {
     const body = (await response.json()) as { public_url: string; telegram_webhook: unknown };
     expect(body.public_url).toBe(`https://${HOST}`);
     expect(body.telegram_webhook).toBe(true);
-    expect(await getSetting(db, "public_url")).toBe(`https://${HOST}`);
 
-    // The cron has no request: it finds the address in the database.
-    const { statusCode } = await cronHandler(undefined, source);
+    // The cron has no request: aws/template.yaml passes the Function URL as PUBLIC_URL.
+    const { statusCode } = await cronHandler(undefined, { ...source, PUBLIC_URL: `https://${HOST}/` });
     expect(statusCode).toBe(200);
   });
 

@@ -9,15 +9,14 @@
 | 3 | **Ключ OpenRouter** (ШІ і голосові) | `sk-or-v1-…` | [§3](#3-ключ-openrouter) |
 | 4 | **Google Client ID і Client Secret** | `…apps.googleusercontent.com` і `GOCSPX-…` | [§4](#4-google-client-id-і-client-secret) |
 
-Залежно від місця розгортання:
+**Бази даних не потрібно** — ні Neon, ні Postgres. Бот нічого не зберігає на сервері:
 
-- **Vercel**: більше нічого, якщо агент зможе сам створити базу Neon (через Vercel CLI або Neon MCP). Якщо не
-  зможе — він одразу, разом із цими чотирма пунктами, попросить рядок підключення з [neon.tech](https://neon.tech)
-  (хвилина, безкоштовно). Без бази бот не запуститься: між повідомленнями він памʼятає доступ до Google, картку
-  зустрічі до «Створити», звʼязки відповідей і стан календаря.
-- **AWS**: окрім чотирьох пунктів, потрібні ще:
-  - рядок підключення до бази з [neon.tech](https://neon.tech) (безкоштовно; `postgresql://…?sslmode=require`);
-  - доступ до вашого акаунта AWS.
+- доступ до Google лежить зашифрованим в **одному закріпленому повідомленні** в чаті з ботом («🔐 Google
+  підключено»). Не відкріплюйте його; щоб відключити Google — просто видаліть це повідомлення;
+- картка зустрічі несе свої дані всередині самого повідомлення в Telegram;
+- календар бот щоразу читає прямо з Google.
+
+Для **AWS** додатково потрібен доступ до вашого акаунта AWS.
 
 Голосові повідомлення розпізнає той самий OpenRouter — окремий ключ не потрібен.
 
@@ -25,7 +24,9 @@
 
 - **Zoom** — зустрічі в Zoom замість Google Meet: Account ID, Client ID і Client Secret застосунку
   Server-to-Server OAuth ([Zoom Marketplace](https://marketplace.zoom.us/develop/create), scope `meeting:write:admin`);
-- миттєві сповіщення про нові листи (Cloud Pub/Sub) — кроки на сторінці `/api/setup`.
+- миттєві сповіщення про нові листи (Cloud Pub/Sub) — кроки на сторінці `/api/setup`;
+- профіль для опису подій: `OWNER_NAME` (інакше — імʼя з Telegram), `OWNER_POSITION`, `OWNER_PHONE`, а також
+  `DEFAULT_DURATION_MIN`, `DEFAULT_FORMAT` (offline / google_meet / zoom), `DEFAULT_ADDRESS`, `LLM_MODEL`.
 
 ---
 

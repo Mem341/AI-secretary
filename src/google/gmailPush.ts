@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
 import { sendMailCard } from "../bot/mail";
-import { exec, one } from "../db/client";
 import type { Env } from "../env";
 import { HttpError } from "../lib/http";
+import { firstTime } from "../session";
 import { Gmail } from "./gmail";
 
 /**
  * Instant new-mail notifications (the n8n "Gmail Trigger → Telegram" flow). Gmail publishes mailbox changes to a
  * Cloud Pub/Sub topic (GMAIL_PUBSUB_TOPIC); a push subscription on that topic calls /api/gmail-push; the bot then
- * reads the new INBOX messages via history.list and sends each one to the owner.
+ * sends each new INBOX email to the owner. Nothing is stored: an email that was reported gets a hidden Gmail label,
+ * so it is never reported twice.
  */
+
+/** Hidden label (not shown in Gmail's label list or on messages) marking emails already sent to Telegram. */
+export const SEEN_LABEL = "AI-secretary-seen";
+const SEEN_QUERY = `in:inbox -label:${SEEN_LABEL} -from:me newer_than:1d`;
 
 /** Secret in the push endpoint URL, derived so no extra variable is needed. Shown to the owner in /settings only. */
 export function gmailPushToken(env: Env): string {
@@ -20,53 +25,44 @@ export function gmailPushEndpoint(env: Env): string {
   return `${env.PUBLIC_URL}/api/gmail-push?token=${gmailPushToken(env)}`;
 }
 
-/** (Re)subscribes the mailbox to the topic; Google expires a watch after 7 days, so the daily cron renews it. */
-export async function startGmailWatch(env: Env, userId: number): Promise<void> {
-  const res = await new Gmail(env, userId).watch(env.GMAIL_PUBSUB_TOPIC);
-  const now = Date.now();
-  // Keeps the stored history id when renewing, so nothing between the two watches is missed.
-  await exec(
-    env.db,
-    `INSERT INTO gmail_state (user_id, history_id, expiration, updated_at) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (user_id) DO UPDATE SET history_id = COALESCE(gmail_state.history_id, EXCLUDED.history_id),
-       expiration = EXCLUDED.expiration, updated_at = EXCLUDED.updated_at`,
-    [userId, res.historyId, Number(res.expiration), now],
-  );
+let seenLabelId: string | null = null;
+
+async function seenLabel(gmail: Gmail): Promise<string> {
+  seenLabelId ??= (await gmail.ensureLabel(SEEN_LABEL, true)).id;
+  return seenLabelId;
 }
 
-export async function stopGmailWatch(env: Env, userId: number): Promise<void> {
-  await new Gmail(env, userId).stop().catch(() => undefined);
-  await exec(env.db, "DELETE FROM gmail_state WHERE user_id = $1", [userId]);
+/**
+ * (Re)subscribes the mailbox to the topic; Google expires a watch after 7 days, so the daily cron renews it. On the
+ * first subscription the recent inbox is marked as seen, so connecting does not flood the chat with old email.
+ */
+export async function startGmailWatch(env: Env, first = false): Promise<void> {
+  const gmail = new Gmail(env);
+  await gmail.watch(env.GMAIL_PUBSUB_TOPIC);
+  if (!first) return;
+  const label = await seenLabel(gmail);
+  for (const id of await gmail.search(SEEN_QUERY, 50)) await gmail.modify(id, [label], []);
 }
 
-/** Sends every email that arrived in the INBOX since the last push. Returns how many were reported. */
-export async function gmailSync(env: Env, userId: number): Promise<number> {
-  const state = await one<{ history_id: string | null }>(env.db, "SELECT history_id FROM gmail_state WHERE user_id = $1", [userId]);
-  if (!state?.history_id) return 0;
-  const gmail = new Gmail(env, userId);
-  let result: { ids: string[]; historyId: string };
-  try {
-    result = await gmail.newInboxMessages(state.history_id);
-  } catch (err) {
-    // 404: the history id is too old (Gmail keeps about a week) — start over from now.
-    if (err instanceof HttpError && err.status === 404) {
-      await exec(env.db, "UPDATE gmail_state SET history_id = NULL WHERE user_id = $1", [userId]);
-      await startGmailWatch(env, userId);
-      return 0;
-    }
-    throw err;
-  }
-  // Saved first: a failure while sending must not make the next push report the same emails again.
-  await exec(env.db, "UPDATE gmail_state SET history_id = $1, updated_at = $2 WHERE user_id = $3", [result.historyId, Date.now(), userId]);
-  for (const id of result.ids) {
+/** Sends every new INBOX email not reported yet. Returns how many were reported. */
+export async function gmailSync(env: Env): Promise<number> {
+  const gmail = new Gmail(env);
+  const label = await seenLabel(gmail);
+  let sent = 0;
+  for (const id of await gmail.search(SEEN_QUERY, 10)) {
+    // Pub/Sub often pushes several times for one email; the label is the real guard, this saves requests.
+    if (!firstTime(`mail:${id}`, 10 * 60_000)) continue;
+    // Marked first: a failure while sending must not make every later push report the same email again.
+    await gmail.modify(id, [label], []);
     try {
       await sendMailCard(env, await gmail.get(id), "📨 Новий лист ·");
+      sent++;
     } catch (err) {
       // A message deleted between the push and now is simply skipped.
       if (!(err instanceof HttpError && err.status === 404)) throw err;
     }
   }
-  return result.ids.length;
+  return sent;
 }
 
 export interface PubSubPush {

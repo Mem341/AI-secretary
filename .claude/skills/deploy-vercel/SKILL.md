@@ -1,6 +1,6 @@
 ---
 name: deploy-vercel
-description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret), validate them, create the Neon Postgres database itself (Vercel CLI integration, Neon MCP or API; otherwise ask for a Neon URL up front, never after deploy), create the project, set env vars, deploy, add the Google redirect URI, finish on /api/setup. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
+description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret), validate them, create the project, set env vars, deploy, add the Google redirect URI, finish on /api/setup. No database is involved. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
 ---
 
 # Deploy AI-secretary to Vercel
@@ -16,7 +16,7 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 - **Talk in the user's language.** Russian or Ukrainian if they write that way.
 - **Ask for exactly the four items in Step 1, in one message.** Do not ask about anything else:
   - not Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
-  - not the database, unless Step 0 found no way to create it yourself (then it is item 5);
+  - not a database: the bot has none (see "No database" below);
   - not the repository (use the public `github.com/Mem341/AI-secretary` unless they mention a fork).
 
   Optional extras are mentioned once, in the final report.
@@ -34,27 +34,12 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 - Prefer the Vercel MCP tools when connected. Otherwise use the Vercel CLI (`npx vercel`). When neither can do a
   step, give the user exact dashboard clicks.
 
-## Step 0 — decide how the database gets created (before asking anything)
+## No database
 
-The bot **cannot run without Postgres**: Vercel functions keep no memory between requests, and the bot must
-remember the Google grant, the meeting card until «Створити», batched forwards, reply links and the calendar
-mirror. Never deploy and finish with "the database is on you" at the end: settle it now.
-
-Pick the first path that works:
-
-1. **Vercel CLI integration**: `npx vercel integration add neon` in the linked project (free plan). It creates the
-   Neon database and sets `DATABASE_URL` on the project. If the command is missing or fails, try the next path.
-2. **Neon MCP server** (if connected): create a project named `ai-secretary` in the region closest to the user,
-   get its connection string, and set it as `DATABASE_URL`.
-3. **Neon API key** (if the user already gave one): create the project yourself:
-   ```bash
-   curl -s -X POST https://console.neon.tech/api/v2/projects \
-     -H "Authorization: Bearer $NEON_API_KEY" -H "content-type: application/json" \
-     -d '{"project":{"name":"ai-secretary","region_id":"aws-eu-central-1"}}'
-   # → .connection_uris[0].connection_uri → DATABASE_URL
-   ```
-4. **None of the above works**: add **item 5** to the Step 1 message and ask the user for a connection string.
-   Do this up front, in the same message, never after the deploy.
+The bot keeps nothing on a server. Its only persistent item, the Google grant, sits encrypted in one pinned message
+of the owner's chat with the bot. Cards and replies carry their own data inside the Telegram messages, and the
+calendar is read live from Google. So there is **no Neon, no Postgres, no `DATABASE_URL`**: do not create or ask
+for one. If an old deployment still has `DATABASE_URL`, it is simply ignored.
 
 ## Step 1 — collect the inputs
 
@@ -67,9 +52,6 @@ Send this (adapted to the user's language) and wait for the answers:
 > 3. **Ключ OpenRouter** — https://openrouter.ai/keys, вигляду `sk-or-v1-…` (на рахунку мають бути кошти)
 > 4. **Google Client ID і Client Secret** — для календаря й пошти. Якщо ще немає, скажіть — дам покрокову
 >    інструкцію на 5 хвилин.
->
-> 5. *(only if Step 0 fell through to path 4)* **Рядок підключення до бази** — безкоштовно на https://neon.tech →
->    Create project → Connect → скопіюйте `postgresql://…?sslmode=require`. Це хвилина; без бази бот не запуститься.
 >
 > Також: у вас **Google Workspace** (пошта компанії) чи **звичайний Gmail**?
 
@@ -92,18 +74,15 @@ On a failed check:
 1. Say which item is wrong and why (e.g. "Telegram відповів 401 — токен недійсний").
 2. Ask for that item only.
 
-## Step 3 — project, database, variables
+## Step 3 — project and variables
 
 1. **Create the Vercel project** from the repository:
    - framework preset **Other**, no build command, root `/`;
    - project name `ai-secretary` unless the user chose one.
 
    If the tools can't create it, hand the user the **Deploy with Vercel** button from README.md. It asks for the
-   variables and offers Neon.
-2. **Database**: by the path chosen in Step 0. With a connection string (paths 2–4), set it as `DATABASE_URL`
-   (Production). Check that the project has `DATABASE_URL` **before** deploying.
-   - The schema is created automatically on the first request.
-3. **Set Production variables:**
+   variables.
+2. **Set Production variables:**
    - `TELEGRAM_BOT_TOKEN`
    - `OWNER_TELEGRAM_ID`
    - `OPENROUTER_API_KEY`
@@ -114,7 +93,7 @@ On a failed check:
 
    Nothing else is needed: the webhook secret and the encryption key are derived from the bot token, and the
    public URL comes from Vercel.
-4. **Deploy to production.**
+3. **Deploy to production.**
 
 ## Step 4 — Google redirect URI
 
@@ -134,12 +113,12 @@ If the page is a Vercel login screen, production is behind Deployment Protection
 ## Step 5 — owner connects, verify
 
 1. The user opens their bot (the @username from Step 2a) and sends `/start`.
-2. They fill in the profile and press «Підключити Google Calendar».
+2. There is no questionnaire: they press «Підключити Google».
 3. For a personal Gmail, Google shows "hasn't verified this app": they click **Advanced → Go to AI-secretary**.
 4. They tick all permissions (calendar and mail).
-5. The bot confirms the connection.
+5. The bot pins a «🔐 Google підключено» message (the encrypted grant; it must stay pinned) and confirms.
 6. Smoke test: «зустріч з тестом завтра о 10:00» → «Створити» → the event appears in Google Calendar.
-7. `curl https://<domain>/api/health` should return `"ok": true`, `"database": true`, `"telegram_webhook": true`.
+7. `curl https://<domain>/api/health` should return `"ok": true`, `"telegram_webhook": true` and, after the owner connects Google, `"google_connected": true`.
 
 ## Step 6 — final report to the user
 
@@ -150,7 +129,9 @@ Keep it short:
 
 Then one line on optional extras:
 - Zoom;
-- instant new-mail notices (Pub/Sub).
+- instant new-mail notices (Pub/Sub);
+- profile and defaults for event descriptions: `OWNER_NAME` (default: their Telegram name), `OWNER_POSITION`,
+  `OWNER_PHONE`, `DEFAULT_DURATION_MIN`, `DEFAULT_FORMAT`, `DEFAULT_ADDRESS`, and `LLM_MODEL`.
 
 They can be added any time; `/api/setup` shows the steps.
 

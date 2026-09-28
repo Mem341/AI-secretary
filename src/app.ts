@@ -1,5 +1,3 @@
-import { getUserById, updateUser } from "./db/users";
-import { all } from "./db/client";
 import {
   type Config,
   type Env,
@@ -10,9 +8,8 @@ import {
   zoomConfigured,
 } from "./env";
 import { decodePush, gmailPushToken, type PubSubPush, startGmailWatch } from "./google/gmailPush";
-import type { Db } from "./db/client";
-import { completeAuth, connectLink, forgetGoogleAuth, googleAuthUrl, verifyState } from "./google/oauth";
-import { channelOwner, RENEW_BEFORE_MS, startWatch } from "./google/sync";
+import { completeAuth, connectLink, forgetGoogleAuth, googleAuthUrl, hasGmailScope, hasGoogleAuth, verifyState } from "./google/oauth";
+import { isOurChannel } from "./google/sync";
 import { type Job, runWithRetry } from "./jobs";
 import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
@@ -29,11 +26,10 @@ export interface Runtime {
 
 export const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** Wires configuration, database and the background job runner together. */
-export function createEnv(config: Config, db: Db, runtime: Runtime): Env {
+/** Wires configuration and the background job runner together. */
+export function createEnv(config: Config, runtime: Runtime): Env {
   const env: Env = {
     ...config,
-    db,
     jobs: {
       async send(job: Job, opts?: { delaySeconds?: number }) {
         runtime.defer(
@@ -63,7 +59,7 @@ export async function telegramWebhook(req: Request, env: Env, runtime: Runtime):
   const update = (await req.json()) as TgUpdate;
   runtime.defer(
     handleUpdate(env, update).catch(async (err) => {
-      await logError(env, "telegram.update", err, { payload: update });
+      await logError(env, "telegram.update", err);
       const chatId = update.message?.chat.id ?? update.callback_query?.from.id;
       if (chatId === env.OWNER_TELEGRAM_ID) {
         await new Telegram(env).send(chatId, "😔 Щось пішло не так. Спробуйте ще раз.").catch(() => undefined);
@@ -78,58 +74,51 @@ export async function oauthStart(req: Request, env: Env): Promise<Response> {
   if (!googleConfigured(env)) return Response.redirect(`${env.PUBLIC_URL}/api/setup`, 302);
   const state = new URL(req.url).searchParams.get("state") ?? "";
   if (!(await verifyState(env, state))) {
-    return page("Посилання застаріло", "Відкрийте /settings у боті й натисніть «Підключити календар» ще раз.", 400);
+    return page("Посилання застаріло", "Відкрийте /settings у боті й натисніть «Підключити Google» ще раз.", 400);
   }
   return Response.redirect(googleAuthUrl(env, state), 302);
 }
 
-/** GET /api/oauth/callback — stores tokens, subscribes to push, starts the initial sync (spec 4.1). */
+/** GET /api/oauth/callback — keeps the grant in the chat, subscribes to push, greets the owner (spec 4.1). */
 export async function oauthCallback(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
-  const userId = await verifyState(env, url.searchParams.get("state") ?? "");
-  if (!userId) return page("Посилання застаріло", "Поверніться в Telegram і спробуйте підключити календар ще раз.", 400);
-  const user = await getUserById(env.db, userId);
-  if (!user || user.tg_id !== env.OWNER_TELEGRAM_ID) return page("Немає доступу", "Цей акаунт не має доступу до бота.", 403);
+  if (!(await verifyState(env, url.searchParams.get("state") ?? ""))) {
+    return page("Посилання застаріло", "Поверніться в Telegram і спробуйте підключити Google ще раз.", 400);
+  }
   const tg = new Telegram(env);
+  const owner = env.OWNER_TELEGRAM_ID;
 
   const code = url.searchParams.get("code");
   if (url.searchParams.get("error") || !code) {
-    await tg.send(user.tg_id, "Підключення календаря скасовано. Спробувати ще раз — /settings.").catch(() => undefined);
+    await tg.send(owner, "Підключення Google скасовано. Спробувати ще раз — /settings.").catch(() => undefined);
     return page("Підключення скасовано", "Поверніться в Telegram.");
   }
 
   try {
-    const { email, scope } = await completeAuth(env, userId, code);
+    const { scope } = await completeAuth(env, code);
     if (!scope.includes("calendar.events")) {
-      await forgetGoogleAuth(env, userId);
-      await tg.send(user.tg_id, "Потрібен доступ до подій календаря — поставте галочку на екрані Google.", {
-        keyboard: [[{ text: "🔗 Спробувати ще раз", url: await connectLink(env, userId) }]],
+      await forgetGoogleAuth(env);
+      await tg.send(owner, "Потрібен доступ до подій календаря — поставте галочку на екрані Google.", {
+        keyboard: [[{ text: "🔗 Спробувати ще раз", url: await connectLink(env) }]],
       });
       return page("Недостатньо доступу", "Поверніться в Telegram і надайте доступ до календаря.", 400);
     }
-    if (email) await updateUser(env.db, userId, { email: email.toLowerCase() });
-    await startWatch(env, userId);
-    await env.jobs.send({ type: "full_sync", userId, notify: true });
-    // New-mail notifications are optional: a Pub/Sub problem must not fail the calendar connection.
-    if (gmailPushConfigured(env) && scope.includes("gmail.modify")) {
-      await startGmailWatch(env, userId).catch((err) => logError(env, "gmail.watch", err, { userId }));
-    }
+    await env.jobs.send({ type: "connected", gmail: scope.includes("gmail.modify") });
   } catch (err) {
-    await logError(env, "oauth.callback", err, { userId });
-    await tg.send(user.tg_id, "😔 Не вдалося підключити календар. Спробуйте ще раз через /settings.").catch(() => undefined);
-    return page("Помилка", "Не вдалося підключити календар. Спробуйте ще раз.", 500);
+    await logError(env, "oauth.callback", err);
+    await tg.send(owner, "😔 Не вдалося підключити Google. Спробуйте ще раз через /settings.").catch(() => undefined);
+    return page("Помилка", "Не вдалося підключити Google. Спробуйте ще раз.", 500);
   }
-  return page("Календар підключено ✅", "Можна повертатися в Telegram.");
+  return page("Google підключено ✅", "Можна повертатися в Telegram.");
 }
 
 /** POST /api/gcal-push — Google push (spec section 3): only a "something changed" signal. */
 export async function gcalPush(req: Request, env: Env): Promise<Response> {
   const channelId = req.headers.get("x-goog-channel-id");
   if (!channelId) return new Response("bad request", { status: 400 });
-  const userId = await channelOwner(env, channelId, req.headers.get("x-goog-channel-token"));
-  // Unknown or stale channel: acknowledge so Google does not retry; it stops at expiration.
-  if (!userId) return new Response("ok");
-  if (req.headers.get("x-goog-resource-state") !== "sync") await env.jobs.send({ type: "sync", userId });
+  // Unknown or foreign channel: acknowledge so Google does not retry; it stops at expiration.
+  if (!isOurChannel(env, channelId, req.headers.get("x-goog-channel-token"))) return new Response("ok");
+  if (req.headers.get("x-goog-resource-state") !== "sync") await env.jobs.send({ type: "sync" });
   return new Response("ok");
 }
 
@@ -141,48 +130,38 @@ export async function gmailPush(req: Request, env: Env): Promise<Response> {
   if (!safeEqual(new URL(req.url).searchParams.get("token"), gmailPushToken(env))) return new Response("forbidden", { status: 403 });
   const body = (await req.json().catch(() => ({}))) as PubSubPush;
   const note = decodePush(body);
-  const row = await all<{ user_id: number }>(
-    env.db,
-    "SELECT g.user_id FROM gmail_state g JOIN users u ON u.id = g.user_id WHERE u.tg_id = $1",
-    [env.OWNER_TELEGRAM_ID],
-  );
-  if (row[0]) await env.jobs.send({ type: "gmail_sync", userId: row[0].user_id });
-  else console.warn("Gmail push without a watch", note?.emailAddress);
+  if (note?.emailAddress) console.log("Gmail push", note.emailAddress);
+  await env.jobs.send({ type: "gmail_sync" });
   return new Response(null, { status: 204 });
 }
 
 /**
- * GET /api/cron/daily — Vercel Cron (Hobby plan allows one run a day): renews push channels that expire within two
- * days and runs the full window sync, the safety net for lost pushes. The work is idempotent; CRON_SECRET, when set,
+ * GET /api/cron/daily — Vercel Cron (Hobby plan allows one run a day): renews the push channels and remembers newly
+ * added events, the safety net for lost pushes. The work is idempotent; CRON_SECRET, when set,
  * restricts the endpoint to Vercel Cron.
  */
 export async function dailyCron(req: Request, env: Env): Promise<Response> {
   if (env.CRON_SECRET && !safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
     return new Response("unauthorized", { status: 401 });
   }
-  const rows = await all<{ user_id: number; expiration: number | null }>(
-    env.db,
-    "SELECT g.user_id, w.expiration FROM google_auth g LEFT JOIN watch_channels w ON w.user_id = g.user_id",
-  );
-  for (const r of rows) {
-    const renew = r.expiration === null || r.expiration < Date.now() + RENEW_BEFORE_MS;
-    await env.jobs.send({ type: "daily", userId: r.user_id, renew });
-  }
-  return Response.json({ ok: true, users: rows.length });
+  await env.jobs.send({ type: "daily" });
+  return Response.json({ ok: true });
+}
+
+/** True once the owner has opened the bot (Telegram knows the chat). */
+async function ownerStarted(env: Env): Promise<boolean> {
+  return new Telegram(env)
+    .call("getChat", { chat_id: env.OWNER_TELEGRAM_ID })
+    .then(() => true)
+    .catch(() => false);
 }
 
 /**
- * GET /api/health — deployment check for the owner or a deploy agent: configuration and database are fine, and whether
- * the Telegram webhook points here. Never returns secrets.
+ * GET /api/health — deployment check for the owner or a deploy agent: configuration is fine and the Telegram webhook
+ * points here. Never returns secrets.
  */
 export async function healthCheck(_req: Request, env: Env): Promise<Response> {
   const checks: Record<string, unknown> = { config: true };
-  try {
-    await all(env.db, "SELECT 1");
-    checks.database = true;
-  } catch (err) {
-    checks.database = `error: ${err instanceof Error ? err.message : String(err)}`;
-  }
   try {
     const info = await new Telegram(env).call<{ url: string; pending_update_count: number; last_error_message?: string }>(
       "getWebhookInfo",
@@ -193,13 +172,11 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
   } catch (err) {
     checks.telegram_webhook = `error: ${err instanceof Error ? err.message : String(err)}`;
   }
-  const owner = await all<{ id: number }>(env.db, "SELECT id FROM users WHERE tg_id = $1", [env.OWNER_TELEGRAM_ID]);
-  checks.owner_started = owner.length > 0;
-  checks.calendar_connected = owner.length
-    ? (await all(env.db, "SELECT 1 FROM google_auth WHERE user_id = $1", [owner[0]!.id])).length > 0
-    : false;
+  checks.owner_started = await ownerStarted(env);
+  checks.google_connected = await hasGoogleAuth(env).catch(() => false);
+  checks.gmail_connected = checks.google_connected ? await hasGmailScope(env).catch(() => false) : false;
   checks.public_url = env.PUBLIC_URL;
-  const ok = checks.database === true && checks.telegram_webhook === true;
+  const ok = checks.telegram_webhook === true;
   return Response.json({ ok, ...checks }, { status: ok ? 200 : 503 });
 }
 
@@ -217,15 +194,17 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
   const tg = new Telegram(env);
   const me = await tg.call<{ username: string }>("getMe", {});
   const url = `${env.PUBLIC_URL}/api/telegram`;
-  const info = await tg.call<{ url: string }>("getWebhookInfo", {});
+  const info = await tg.call<{ url: string; max_connections?: number }>("getWebhookInfo", {});
   // The command menu is refreshed every time, so an updated deployment shows new commands.
   await tg.call("setMyCommands", { commands: BOT_COMMANDS });
-  // The secret cannot be read back, so the webhook is (re)registered whenever the URL differs.
-  if (info.url === url) return { username: me.username, changed: false };
+  // The secret cannot be read back, so the webhook is (re)registered whenever the URL or the settings differ.
+  if (info.url === url && info.max_connections === 1) return { username: me.username, changed: false };
   await tg.call("setWebhook", {
     url,
     secret_token: env.TELEGRAM_WEBHOOK_SECRET,
     allowed_updates: ["message", "callback_query"],
+    // One update at a time: a burst of forwarded messages reaches the same instance in order (see session.ts).
+    max_connections: 1,
     drop_pending_updates: true,
   });
   return { username: me.username, changed: true };
@@ -233,12 +212,11 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
 
 /**
  * GET /api/setup — the page whoever deployed this copy opens first: registers the Telegram webhook and shows a
- * checklist (Telegram, Google Calendar, voice, first /start). Safe to open repeatedly; reveals no secrets.
+ * checklist (Telegram, Google, first /start). Safe to open repeatedly; reveals no secrets.
  */
 export async function setupPage(_req: Request, env: Env): Promise<Response> {
   const steps: SetupStep[] = [
     { status: "ok", title: "Змінні середовища", details: `Обовʼязкові задані: ${REQUIRED_VARS.map(code).join(", ")}.` },
-    { status: "ok", title: "База даних", details: "Postgres підключено, таблиці створено автоматично." },
   ];
 
   let botUsername: string | null = null;
@@ -307,50 +285,37 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
         },
   );
 
-  const owner = await all<{ id: number; full_name: string | null }>(env.db, "SELECT id, full_name FROM users WHERE tg_id = $1", [
-    env.OWNER_TELEGRAM_ID,
-  ]);
-  const calendar = owner.length
-    ? (await all(env.db, "SELECT 1 FROM google_auth WHERE user_id = $1", [owner[0]!.id])).length > 0
-    : false;
+  const started = await ownerStarted(env);
+  const calendar = started && (await hasGoogleAuth(env).catch(() => false));
   const botLink = botUsername ? `<a class="button" href="https://t.me/${esc(botUsername)}?start=setup">Відкрити бота</a>` : "";
   steps.push(
     calendar
-      ? { status: "ok", title: "Ви підключені", details: "Профіль заповнено, календар підключено. Пишіть боту про зустрічі." }
+      ? { status: "ok", title: "Ви підключені", details: "Google підключено. Пишіть боту про зустрічі." }
       : {
           status: "todo",
-          title: owner[0]?.full_name ? "Підключіть календар у боті" : "Напишіть боту /start",
-          details: `Бот відповідає лише власнику з ${code("OWNER_TELEGRAM_ID")}. Відкрийте бота, заповніть профіль і натисніть «Підключити Google Calendar».<br>${botLink}`,
+          title: started ? "Підключіть Google у боті" : "Напишіть боту /start",
+          details: `Бот відповідає лише власнику з ${code("OWNER_TELEGRAM_ID")}. Відкрийте бота, напишіть /start і натисніть «Підключити Google».<br>${botLink}`,
         },
   );
   return renderSetupPage(steps);
 }
 
-/** The setup page when the deployment cannot start yet: which variables or which database are missing. */
-export function setupBootErrorPage(source: Record<string, string | undefined>, databaseUrl: string | undefined, message: string): Response {
+/** The setup page when the deployment cannot start yet: which variables are missing or wrong. */
+export function setupBootErrorPage(source: Record<string, string | undefined>, message: string): Response {
   const missing = REQUIRED_VARS.filter((k) => !source[k]?.trim());
   const steps: SetupStep[] = [];
   if (missing.length) {
     steps.push({
       status: "error",
       title: "Змінні середовища",
-      details: `Додайте змінні середовища й перерозгорніть (Vercel: Project → Settings → Environment Variables; AWS: змінні Lambda у ${code("template.yaml")}/консолі): ${missing.map(code).join(", ")}.<ol>
+      details: `Додайте змінні середовища й перерозгорніть (Vercel: Project → Settings → Environment Variables; AWS: параметри стека в ${code("template.yaml")}): ${missing.map(code).join(", ")}.<ol>
 <li>${code("TELEGRAM_BOT_TOKEN")} — у <a href="https://t.me/BotFather">@BotFather</a> командою /newbot.</li>
 <li>${code("OWNER_TELEGRAM_ID")} — ваш числовий ID, його напише <a href="https://t.me/userinfobot">@userinfobot</a>. Бот відповідатиме лише цій людині.</li>
 <li>${code("OPENROUTER_API_KEY")} — <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li></ol>`,
     });
-  } else if (databaseUrl) {
-    // Variables are present, so the failure is the value of one of them or the database connection.
-    steps.push({ status: "error", title: "Запуск", details: esc(message) });
   } else {
-    steps.push({ status: "ok", title: "Змінні середовища", details: `Обовʼязкові задані: ${REQUIRED_VARS.map(code).join(", ")}.` });
-  }
-  if (!databaseUrl) {
-    steps.push({
-      status: "todo",
-      title: "База даних",
-      details: `Потрібен Postgres у змінній ${code("DATABASE_URL")}. Vercel: проєкт → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b> (безкоштовно). AWS: створіть базу на <a href="https://neon.tech">neon.tech</a> (безкоштовно) і вкажіть рядок підключення. Таблиці створяться автоматично.`,
-    });
+    // Variables are present, so the failure is the value of one of them.
+    steps.push({ status: "error", title: "Запуск", details: esc(message) });
   }
   return renderSetupPage(steps);
 }

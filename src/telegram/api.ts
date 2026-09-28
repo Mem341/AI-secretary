@@ -1,4 +1,4 @@
-import type { Env } from "../env";
+import type { Config } from "../env";
 import { expectOk, fetchWithRetry, HttpError } from "../lib/http";
 import type { InlineKeyboard, TgFile, TgMessage } from "./types";
 
@@ -11,10 +11,12 @@ export interface SendOptions {
   /** Show a one-time reply keyboard (e.g. "share contact"). */
   replyKeyboard?: { text: string; request_contact?: boolean }[][];
   removeKeyboard?: boolean;
+  /** Opens the reply field on the owner's side, so the answer comes back as a reply to this message. */
+  forceReply?: string;
 }
 
 export class Telegram {
-  constructor(private readonly env: Env) {}
+  constructor(private readonly env: Pick<Config, "TELEGRAM_BOT_TOKEN">) {}
 
   async call<T>(method: string, body: Record<string, unknown>): Promise<T> {
     const res = await fetchWithRetry(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/${method}`, {
@@ -28,6 +30,7 @@ export class Telegram {
   }
 
   private markup(opts: SendOptions): Record<string, unknown> | undefined {
+    if (opts.forceReply !== undefined) return { force_reply: true, input_field_placeholder: opts.forceReply || undefined };
     if (opts.keyboard) return { inline_keyboard: opts.keyboard };
     if (opts.replyKeyboard) return { keyboard: opts.replyKeyboard, resize_keyboard: true, one_time_keyboard: true };
     if (opts.removeKeyboard) return { remove_keyboard: true };

@@ -1,14 +1,15 @@
-import { createDraft, getDraft, saveCard, transition } from "../db/drafts";
-import { linkMessage } from "../db/messageLinks";
-import { getUserById, listContacts, modelOf, saveContact, type User } from "../db/users";
 import type { Env } from "../env";
 import { addressOf, Gmail, type MailMessage, nameOf, replySubject } from "../google/gmail";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "../google/oauth";
 import { chatJson } from "../llm/openrouter";
 import { mailSystemPrompt } from "../llm/prompts";
+import { expectAnswer } from "../session";
 import { esc, Telegram } from "../telegram/api";
-import type { InlineKeyboard } from "../telegram/types";
+import { hiddenData, readHidden } from "../telegram/hidden";
+import type { InlineKeyboard, TgMessage } from "../telegram/types";
 import { type DirectoryEntry, findInDirectory } from "./card";
+import { loadDirectory } from "./contacts";
+import { loadOwner } from "./owner";
 
 /** A Gmail request, as understood by the LLM (the n8n "Gmail Agent" tools, behind a confirmation card). */
 export interface MailAction {
@@ -74,23 +75,40 @@ export function normalizeMail(raw: unknown, directory: DirectoryEntry[], targetI
   };
 }
 
-async function requireGmail(env: Env, user: User, chatId: number): Promise<boolean> {
-  if ((await hasGoogleAuth(env, user.id)) && (await hasGmailScope(env, user.id))) return true;
+/** Hidden in a message showing an email, so a reply to it acts on that email. */
+export interface MailRef {
+  k: "mail";
+  id: string;
+}
+
+/** Hidden in a clarifying question about mail: the request so far and the email it is about. */
+export interface MailQuestion {
+  k: "mailq";
+  src: string;
+  t: string | null;
+}
+
+/** Hidden in a confirmation of an action that sends or removes mail. */
+interface MailActionData {
+  k: "mact";
+  a: MailAction;
+}
+
+async function requireGmail(env: Env, chatId: number): Promise<boolean> {
+  if ((await hasGoogleAuth(env)) && (await hasGmailScope(env))) return true;
   await new Telegram(env).send(
     chatId,
     "Щоб я працював з поштою, дайте доступ до Gmail: перепідключіть Google (у вікні Google поставте галочки для пошти).",
-    { keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env, user.id) }]] },
+    { keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env) }]] },
   );
   return false;
 }
 
-/** Entry point from the router, "/mail", or a reply to an email notice (`targetId`). */
-export async function startMailDraft(env: Env, user: User, chatId: number, text: string, targetId: string | null = null): Promise<void> {
-  if (!(await requireGmail(env, user, chatId))) return;
-  const draftId = await createDraft(env.db, user.id, "text", text, "parsing", null, { kind: "mail" });
-  if (targetId) await saveCard(env.db, draftId, { target_id: targetId }, "parsing");
+/** Entry point from the router, "/mail", or a reply to an email (`targetId`). */
+export async function startMailDraft(env: Env, chatId: number, text: string, targetId: string | null = null): Promise<void> {
+  if (!(await requireGmail(env, chatId))) return;
   await new Telegram(env).typing(chatId);
-  await env.jobs.send({ type: "mail_parse", draftId });
+  await env.jobs.send({ type: "mail", text, targetId });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -115,19 +133,19 @@ export function mailButtons(m: MailMessage): InlineKeyboard {
 
 /** Sends one message per email so a reply to any of them acts on exactly that email. */
 export async function sendMailCard(env: Env, m: MailMessage, heading?: string): Promise<void> {
-  const msg = await new Telegram(env).send(env.OWNER_TELEGRAM_ID, mailCardHtml(m, heading), { keyboard: mailButtons(m) });
-  await linkMessage(env.db, msg.message_id, "mail", m.id);
+  const html = hiddenData({ k: "mail", id: m.id } satisfies MailRef) + mailCardHtml(m, heading);
+  await new Telegram(env).send(env.OWNER_TELEGRAM_ID, html, { keyboard: mailButtons(m) });
 }
 
-async function showSearch(env: Env, user: User, query: string): Promise<void> {
-  const gmail = new Gmail(env, user.id);
+async function showSearch(env: Env, query: string): Promise<void> {
+  const gmail = new Gmail(env);
   const ids = await gmail.search(query, 5);
   const tg = new Telegram(env);
   if (!ids.length) {
-    await tg.send(user.tg_id, `📭 Листів не знайдено (${esc(query)}).`);
+    await tg.send(env.OWNER_TELEGRAM_ID, `📭 Листів не знайдено (${esc(query)}).`);
     return;
   }
-  await tg.send(user.tg_id, `📬 Знайдено: ${ids.length}${ids.length === 5 ? "+" : ""}. Відповідайте на лист, щоб відповісти, архівувати чи додати мітку.`);
+  await tg.send(env.OWNER_TELEGRAM_ID, `📬 Знайдено: ${ids.length}${ids.length === 5 ? "+" : ""}. Відповідайте на лист, щоб відповісти, архівувати чи додати мітку.`);
   for (const id of ids) await sendMailCard(env, await gmail.get(id));
 }
 
@@ -164,78 +182,67 @@ function renderMail(action: MailAction, target: MailMessage | null): { html: str
   }
 }
 
-export async function parseMailDraft(env: Env, draftId: string, now = new Date()): Promise<void> {
-  const draft = await getDraft(env.db, draftId);
-  if (!draft || draft.state !== "parsing") return;
-  const user = await getUserById(env.db, draft.user_id);
-  if (!user) return;
-  const targetId = (draft.card as Partial<MailAction> | null)?.target_id ?? null;
-  const gmail = new Gmail(env, user.id);
+/** Job: classifies a Gmail request; runs read-only actions, asks to confirm anything that sends or removes mail. */
+export async function parseMail(env: Env, text: string, targetId: string | null, now = new Date()): Promise<void> {
+  const user = await loadOwner(env);
+  const gmail = new Gmail(env);
   const target = targetId ? await gmail.get(targetId) : null;
-  const directory = await listContacts(env.db);
-  const raw = await chatJson(env, modelOf(user, env.LLM_MODEL), [
+  const directory = await loadDirectory(env);
+  const raw = await chatJson(env, env.LLM_MODEL, [
     { role: "system", content: mailSystemPrompt(user, directory, target && { from: target.from, subject: target.subject, body: target.bodyText }, now) },
-    { role: "user", content: draft.source_text },
+    { role: "user", content: text },
   ]);
   const action = normalizeMail(raw, directory, targetId);
   const tg = new Telegram(env);
+  const chat = env.OWNER_TELEGRAM_ID;
 
   // Read-only and easily reversible actions run at once; anything that sends or removes mail waits for "✅".
   if (action.action === "search") {
-    await transition(env.db, draftId, ["parsing"], "created");
-    await showSearch(env, user, action.query ?? "is:unread in:inbox");
+    await showSearch(env, action.query ?? "is:unread in:inbox");
     return;
   }
   if (action.action === "archive" || action.action === "mark_read") {
     await gmail.modify(target!.id, [], action.action === "archive" ? ["INBOX"] : ["UNREAD"]);
-    await transition(env.db, draftId, ["parsing"], "created");
-    await tg.send(user.tg_id, action.action === "archive" ? "🗄 Лист в архіві." : "✅ Позначено як прочитаний.");
+    await tg.send(chat, action.action === "archive" ? "🗄 Лист в архіві." : "✅ Позначено як прочитаний.");
     return;
   }
   if (action.action === "draft") {
     await gmail.createDraft({ to: action.to.map((t) => t.email!), subject: action.subject ?? "", body: action.body ?? "" });
-    await transition(env.db, draftId, ["parsing"], "created");
-    await tg.send(user.tg_id, `📝 Чернетку «${esc(action.subject ?? "(без теми)")}» збережено в Gmail.`);
+    await tg.send(chat, `📝 Чернетку «${esc(action.subject ?? "(без теми)")}» збережено в Gmail.`);
     return;
   }
 
   const { html, confirm } = renderMail(action, target);
-  const keyboard: InlineKeyboard = [];
-  if (confirm) keyboard.push([{ text: confirm, callback_data: `m:${draftId}:y` }]);
-  keyboard.push([{ text: "✖️ Скасувати", callback_data: `m:${draftId}:x` }]);
-  let messageId = draft.card_message_id;
-  if (messageId) {
-    try {
-      await tg.edit(user.tg_id, messageId, html, keyboard);
-    } catch {
-      messageId = null;
-    }
+  if (!confirm) {
+    const question: MailQuestion = { k: "mailq", src: text.slice(-1000), t: targetId };
+    await tg.send(chat, hiddenData(question) + html, { forceReply: "Відповідь" });
+    expectAnswer(chat, question);
+    return;
   }
-  if (!messageId) messageId = (await tg.send(user.tg_id, html, { keyboard })).message_id;
-  await saveCard(env.db, draftId, action, "pending", messageId);
+  const keyboard: InlineKeyboard = [[{ text: confirm, callback_data: "m:y" }, { text: "✖️ Скасувати", callback_data: "m:x" }]];
+  await tg.send(chat, hiddenData({ k: "mact", a: action } satisfies MailActionData) + html, { keyboard });
 }
 
-/** "m:<draftId>:<y|x>" — confirmation of a mail action that sends or removes something. */
-export async function handleMailCallback(env: Env, user: User, draftId: string, button: string): Promise<string | undefined> {
+/** "m:<y|x>" — confirmation of a mail action that sends or removes something; the action is in the message. */
+export async function handleMailCallback(env: Env, message: TgMessage | undefined, button: string): Promise<string | undefined> {
   const tg = new Telegram(env);
-  const draft = await getDraft(env.db, draftId);
-  if (!draft || draft.user_id !== user.id || draft.kind !== "mail") return "Дію не знайдено";
-  const messageId = draft.card_message_id;
+  const data = readHidden<MailActionData>(message);
+  if (!message || data?.k !== "mact") return "Дію не знайдено";
+  const chat = env.OWNER_TELEGRAM_ID;
   if (button === "x") {
-    if (!(await transition(env.db, draft.id, ["pending"], "cancelled"))) return "Уже неактуально";
-    if (messageId) await tg.edit(user.tg_id, messageId, "✖️ Скасовано.");
+    await tg.edit(chat, message.message_id, "✖️ Скасовано.");
     return "Скасовано";
   }
   if (button !== "y") return undefined;
-  const action = draft.card as MailAction;
-  if (!(await transition(env.db, draft.id, ["pending"], "creating"))) return "Вже обробляється";
+  const action = data.a;
+  // Shown before sending, so a second tap finds no buttons.
+  await tg.edit(chat, message.message_id, "⏳ Виконую…");
 
   try {
-    const gmail = new Gmail(env, user.id);
+    const gmail = new Gmail(env);
     let result: string;
     if (action.action === "send") {
       await gmail.send({ to: action.to.map((t) => t.email!), subject: action.subject ?? "", body: action.body ?? "" });
-      for (const t of action.to) if (t.name && t.email) await saveContact(env.db, t.name, t.email);
       result = `✅ Лист надіслано: ${esc(action.to.map((t) => t.name ?? t.email).join(", "))}`;
     } else if (action.action === "reply" && action.target_id) {
       const target = await gmail.get(action.target_id);
@@ -258,19 +265,16 @@ export async function handleMailCallback(env: Env, user: User, draftId: string, 
       await gmail.trash(action.target_id);
       result = "🗑 Лист у кошику (його можна відновити в Gmail протягом 30 днів).";
     } else {
-      await transition(env.db, draft.id, ["creating"], "pending");
       return "Немає що підтвердити";
     }
-    await transition(env.db, draft.id, ["creating"], "created");
-    if (messageId) await tg.edit(user.tg_id, messageId, result);
-    else await tg.send(user.tg_id, result);
+    await tg.edit(chat, message.message_id, result);
     return "Готово";
   } catch (err) {
-    await transition(env.db, draft.id, ["creating"], "pending");
+    await tg.edit(chat, message.message_id, "😔 Не вдалося виконати. Спробуйте ще раз.").catch(() => undefined);
     if (err instanceof GoogleAuthRevokedError) {
-      await forgetGoogleAuth(env, user.id);
-      await tg.send(user.tg_id, "⚠️ Доступ до Google втрачено. Підключіть його знову і спробуйте ще раз.", {
-        keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env, user.id) }]],
+      await forgetGoogleAuth(env);
+      await tg.send(chat, "⚠️ Доступ до Google втрачено. Підключіть його знову і спробуйте ще раз.", {
+        keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env) }]],
       });
       return undefined;
     }
@@ -279,17 +283,17 @@ export async function handleMailCallback(env: Env, user: User, draftId: string, 
 }
 
 /** "g:<gmailId>:<r|u|a>" — quick, reversible buttons under an email: read in full, mark read, archive. */
-export async function handleMailQuickAction(env: Env, user: User, gmailId: string, op: string): Promise<string | undefined> {
-  const gmail = new Gmail(env, user.id);
+export async function handleMailQuickAction(env: Env, gmailId: string, op: string): Promise<string | undefined> {
+  const gmail = new Gmail(env);
   const tg = new Telegram(env);
   if (op === "r") {
     const m = await gmail.get(gmailId);
     const body = m.bodyText.length > MAX_BODY ? `${m.bodyText.slice(0, MAX_BODY)}…` : m.bodyText;
-    const msg = await tg.send(
-      user.tg_id,
+    await tg.send(
+      env.OWNER_TELEGRAM_ID,
+      hiddenData({ k: "mail", id: m.id } satisfies MailRef) +
       [`📧 <b>${esc(m.from)}</b>`, `<b>${esc(m.subject || "(без теми)")}</b>`, esc(m.date), "", esc(body || m.snippet)].join("\n"),
     );
-    await linkMessage(env.db, msg.message_id, "mail", m.id);
     if (m.unread) await gmail.modify(gmailId, [], ["UNREAD"]);
     return undefined;
   }

@@ -37,13 +37,22 @@ export type TgMessageOrigin =
   | { type: "chat"; date: number; sender_chat: { title?: string } }
   | { type: "channel"; date: number; chat: { title?: string } };
 
+export interface TgEntity {
+  type: string;
+  offset: number;
+  length: number;
+  url?: string;
+}
+
 export interface TgMessage {
   message_id: number;
   date: number;
   chat: TgChat;
   from?: TgUser;
   text?: string;
+  entities?: TgEntity[];
   caption?: string;
+  caption_entities?: TgEntity[];
   forward_origin?: TgMessageOrigin;
   reply_to_message?: TgMessage;
   voice?: TgFile;

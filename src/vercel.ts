@@ -1,25 +1,14 @@
 import { waitUntil } from "@vercel/functions";
 import { createEnv, realSleep, type Runtime } from "./app";
-import { neonDb } from "./db/client";
-import { migrate } from "./db/schema";
-import { ConfigError, databaseUrl, type Env, loadConfig } from "./env";
-
-export { databaseUrl };
+import { ConfigError, type Env, loadConfig } from "./env";
 
 const runtime: Runtime = { defer: waitUntil, sleep: realSleep };
 
 let booting: Promise<Env> | null = null;
 
-/** Builds the environment once per instance; the schema is migrated on the first request. */
+/** Builds the environment once per instance. */
 function boot(): Promise<Env> {
-  booting ??= (async () => {
-    const config = loadConfig();
-    const url = databaseUrl();
-    if (!url) throw new ConfigError("Missing environment variables: DATABASE_URL (connect Neon Postgres to the project)");
-    const db = neonDb(url);
-    await migrate(db);
-    return createEnv(config, db, runtime);
-  })().catch((err) => {
+  booting ??= (async () => createEnv(loadConfig(), runtime))().catch((err) => {
     booting = null;
     throw err;
   });
@@ -29,7 +18,7 @@ function boot(): Promise<Env> {
 type Handler = (req: Request, env: Env, runtime: Runtime) => Promise<Response>;
 
 /**
- * Wraps an app handler as a Vercel Function. When the deployment cannot start (missing variables, no database),
+ * Wraps an app handler as a Vercel Function. When the deployment cannot start (missing variables),
  * `onBootError` renders the answer; by default a 500 with the missing variable names.
  */
 export function vercelHandler(

@@ -1,8 +1,5 @@
 import { createEnv, dailyCron, realSleep, type Runtime, setupBootErrorPage } from "./app";
-import { type Db, neonDb } from "./db/client";
-import { migrate } from "./db/schema";
-import { getSetting, setSetting } from "./db/settings";
-import { ConfigError, databaseUrl, type Env, loadConfig } from "./env";
+import { ConfigError, type Env, loadConfig } from "./env";
 import { route, routePath } from "./router";
 
 /**
@@ -51,43 +48,16 @@ async function drain(): Promise<void> {
   }
 }
 
-let db: Db | null = null;
-let migrated: Promise<unknown> | null = null;
 let cachedEnv: Env | null = null;
 
-const PUBLIC_URL_KEY = "public_url";
-
-/** Tests (and alternative hosts) supply their own database instead of Neon. */
-export function setDatabase(d: Db): void {
-  db = d;
-  migrated = migrate(d);
-  cachedEnv = null;
-}
-
 /**
- * Builds the environment. Without PUBLIC_URL, the Function URL a request arrived on is used and remembered, so the
- * scheduled cron — which has no request — knows the address too. Exported for tests.
+ * Builds the environment. Without PUBLIC_URL, the Function URL a request arrived on is used; the scheduled cron —
+ * which has no request — gets PUBLIC_URL from the stack (aws/template.yaml). Exported for tests.
  */
-export async function boot(host: string | undefined, source: Record<string, string | undefined> = process.env): Promise<Env> {
-  const url = databaseUrl(source);
-  if (!url) throw new ConfigError("Missing environment variables: DATABASE_URL (a Postgres connection string, e.g. from neon.tech)");
-  db ??= neonDb(url);
-  migrated ??= migrate(db).catch((err) => {
-    migrated = null;
-    throw err;
-  });
-  await migrated;
-
-  let fallback = "";
-  if (!source.PUBLIC_URL?.trim()) {
-    const fromRequest = host ? `https://${host}` : "";
-    const stored = await getSetting(db, PUBLIC_URL_KEY);
-    if (fromRequest && fromRequest !== stored) await setSetting(db, PUBLIC_URL_KEY, fromRequest);
-    fallback = fromRequest || stored || "";
-  }
-  const config = loadConfig(source, fallback);
+export function boot(host: string | undefined, source: Record<string, string | undefined> = process.env): Env {
+  const config = loadConfig(source, host ? `https://${host}` : "");
   if (cachedEnv?.PUBLIC_URL === config.PUBLIC_URL) return cachedEnv;
-  cachedEnv = createEnv(config, db, runtime);
+  cachedEnv = createEnv(config, runtime);
   return cachedEnv;
 }
 
@@ -100,13 +70,13 @@ export async function handleHttp(
   const req = eventToRequest(event);
   let response: Response;
   try {
-    const env = await boot(event.requestContext?.domainName, source);
+    const env = boot(event.requestContext?.domainName, source);
     response = await route(req, env, runtime);
   } catch (err) {
     console.error("request failed", err);
     const message = err instanceof Error ? err.message : String(err);
     if (routePath(req) === "/api/setup" || routePath(req) === "/") {
-      response = setupBootErrorPage(source, databaseUrl(source), message);
+      response = setupBootErrorPage(source, message);
     } else {
       response = Response.json({ ok: false, error: err instanceof ConfigError ? message : "Startup failed, see logs" }, { status: 500 });
     }
@@ -116,7 +86,7 @@ export async function handleHttp(
 
 export async function cronHandler(_event?: unknown, source: Record<string, string | undefined> = process.env): Promise<{ statusCode: number }> {
   pending = [];
-  const env = await boot(undefined, source);
+  const env = boot(undefined, source);
   const headers: Record<string, string> = env.CRON_SECRET ? { authorization: `Bearer ${env.CRON_SECRET}` } : {};
   const res = await dailyCron(new Request(`${env.PUBLIC_URL}/api/cron/daily`, { headers }), env);
   await drain();
