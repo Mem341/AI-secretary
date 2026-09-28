@@ -9,7 +9,7 @@ export interface Transcript {
 /** ElevenLabs Scribe speech-to-text, Ukrainian (spec section 3). */
 export async function transcribe(
   env: Env,
-  audio: Uint8Array,
+  audio: Uint8Array<ArrayBuffer>,
   filename: string,
   { diarize = false }: { diarize?: boolean } = {},
 ): Promise<Transcript> {

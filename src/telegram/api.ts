@@ -72,7 +72,7 @@ export class Telegram {
   }
 
   /** Downloads a file (≤ 20 MB). */
-  async download(fileId: string): Promise<{ bytes: Uint8Array; path: string }> {
+  async download(fileId: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; path: string }> {
     const file = await this.call<TgFile>("getFile", { file_id: fileId });
     if (!file.file_path) throw new Error("Telegram returned no file_path");
     const res = await expectOk(

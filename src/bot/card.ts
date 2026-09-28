@@ -47,12 +47,15 @@ export interface Card {
   slots?: string[];
 }
 
+/** Address-book entry (name → email). */
 export interface DirectoryEntry {
   name: string;
   email: string;
 }
 
 export const CONFIDENCE_THRESHOLD = 0.7;
+
+const PUBLIC_MAIL_DOMAINS = new Set(["gmail.com", "googlemail.com", "ukr.net", "i.ua", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "meta.ua"]);
 
 const EMAIL_RE = /^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/;
 
@@ -62,7 +65,7 @@ function normName(s: string): string {
   return s.toLowerCase().replace(/[ʼ'’`]/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** Finds a staff member by full name, or by a unique first name / surname. */
+/** Finds a contact by full name, or by a unique first name / surname. */
 export function findInDirectory(directory: DirectoryEntry[], name: string): DirectoryEntry | null {
   const n = normName(name);
   if (!n) return null;
@@ -77,8 +80,8 @@ export function findInDirectory(directory: DirectoryEntry[], name: string): Dire
 }
 
 /**
- * Validates and completes a card returned by the LLM: defaults from the owner's profile, staff emails from
- * the directory, no duplicates, the owner never listed as an attendee. Never invents data.
+ * Validates and completes a card returned by the LLM: defaults from the owner's profile, emails from the
+ * address book, no duplicates, the owner never listed as an attendee. Never invents data.
  */
 export function normalizeCard(raw: unknown, owner: User, directory: DirectoryEntry[]): Card {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -89,6 +92,9 @@ export function normalizeCard(raw: unknown, owner: User, directory: DirectoryEnt
     r.format === "google_meet" || r.format === "offline" ? r.format : formatOf(owner);
 
   const ownerEmail = owner.email?.toLowerCase() ?? null;
+  const domain = ownerEmail?.split("@")[1] ?? null;
+  // Public mailboxes do not mark anyone as a colleague.
+  const ownerDomain = domain && !PUBLIC_MAIL_DOMAINS.has(domain) ? domain : null;
   const ownerName = owner.full_name ? normName(owner.full_name) : null;
   const seen = new Set<string>();
   const attendees: CardAttendee[] = [];
@@ -98,17 +104,17 @@ export function normalizeCard(raw: unknown, owner: User, directory: DirectoryEnt
     const name = str(item.name);
     let email = str(item.email)?.toLowerCase() ?? null;
     if (email && !EMAIL_RE.test(email)) email = null;
-    let internal = item.internal === true;
-    const staff = name ? findInDirectory(directory, name) : null;
-    const staffByEmail = email ? directory.find((d) => d.email.toLowerCase() === email) : undefined;
-    if (!email && staff) email = staff.email.toLowerCase();
-    if (staff || staffByEmail) internal = true;
+    const known = name ? findInDirectory(directory, name) : null;
+    const knownByEmail = email ? directory.find((d) => d.email.toLowerCase() === email) : undefined;
+    if (!email && known) email = known.email.toLowerCase();
+    // Colleague: the model says so, or the email shares the owner's corporate domain.
+    const internal = item.internal === true || (!!email && !!ownerDomain && email.endsWith(`@${ownerDomain}`));
     if ((email && email === ownerEmail) || (name && ownerName && normName(name) === ownerName)) continue;
     const key = email ?? `name:${normName(name ?? "")}`;
     if (!name && !email) continue;
     if (seen.has(key)) continue;
     seen.add(key);
-    attendees.push({ name: name ?? staffByEmail?.name ?? null, email, internal });
+    attendees.push({ name: name ?? knownByEmail?.name ?? null, email, internal });
   }
 
   let location = str(r.location);

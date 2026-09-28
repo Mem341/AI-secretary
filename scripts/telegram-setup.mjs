@@ -18,7 +18,7 @@ async function call(method, body) {
 }
 
 await call("setWebhook", {
-  url: `${publicUrl.replace(/\/$/, "")}/telegram/webhook`,
+  url: `${publicUrl.replace(/\/$/, "")}/api/telegram`,
   secret_token: secret,
   allowed_updates: ["message", "callback_query"],
   drop_pending_updates: true,
@@ -26,6 +26,7 @@ await call("setWebhook", {
 await call("setMyCommands", {
   commands: [
     { command: "new", description: "Нова зустріч" },
+    { command: "contacts", description: "Адресна книга" },
     { command: "settings", description: "Профіль і календар" },
     { command: "cancel", description: "Скасувати поточну дію" },
     { command: "help", description: "Що вміє бот" },
