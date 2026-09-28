@@ -23,10 +23,14 @@ Telegram. Ask only for what they alone can provide, and do everything else yours
 
 - **Talk in the user's language** (Russian or Ukrainian if they write that way).
 - **Ask for exactly the items in Step 1, in one message.**
-  - Do not ask about ElevenLabs/voice, Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or
+  - Do not ask about Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or
     `ENCRYPTION_KEY`.
   - Do not ask for the region; default to `eu-central-1`, or use one the user named.
   - Mention optional extras once, in the final report.
+- **Voice needs nothing:** OpenRouter transcribes voice messages with the same key.
+- **Zoom is optional:** if the user offers Zoom credentials (Account ID, Client ID, Client Secret of a
+  Server-to-Server OAuth app), pass `ZoomAccountId`, `ZoomClientId` and `ZoomClientSecret`; otherwise skip it.
+  Google Meet works without it.
 - **If the user lacks an item,** send the steps for that item only from `docs/what-you-need.md` (§1–§4; the Neon
   steps are in Step 1 below). Translate them if needed and keep the links.
 - **Validate every value (Step 2) before deploying.**
@@ -135,7 +139,6 @@ Keep it short:
 
 Finish with one line on optional extras. The user can add these any time as stack parameters; `/api/setup` shows
 the steps:
-- voice messages: `ElevenLabsApiKey`;
 - Zoom: `ZoomAccountId`, `ZoomClientId`, `ZoomClientSecret`;
 - instant new-mail notices: `GmailPubsubTopic`.
 

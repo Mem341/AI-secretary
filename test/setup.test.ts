@@ -3,6 +3,7 @@ import { dailyCron, oauthStart, setupBootErrorPage, setupPage } from "../src/app
 import type { Db } from "../src/db/client";
 import { ConfigError, loadConfig } from "../src/env";
 import { connectLink } from "../src/google/oauth";
+import { runWithRetry } from "../src/jobs";
 import { handleUpdate } from "../src/telegram/handler";
 import { mockFetch, OWNER, pgliteDb, resetDb, testConfig, testEnv, tgCalls } from "./helpers";
 
@@ -33,7 +34,7 @@ describe("loadConfig", () => {
     // Derived secrets are stable across instances of the same deployment.
     expect(loadConfig(minimal).ENCRYPTION_KEY).toBe(c.ENCRYPTION_KEY);
     expect(c.GOOGLE_CLIENT_ID).toBe("");
-    expect(c.ELEVENLABS_API_KEY).toBe("");
+    expect(c.STT_MODEL).toBe("google/gemini-2.5-flash");
     expect(c.CRON_SECRET).toBe("");
   });
 
@@ -65,7 +66,6 @@ describe("/api/setup", () => {
     ]);
     const { env } = testEnv(db);
     env.GOOGLE_CLIENT_ID = "";
-    env.ELEVENLABS_API_KEY = "";
 
     const html = await (await setupPage(new Request("https://bot.test/api/setup"), env)).text();
     expect(tgCalls(calls, "setWebhook")).toEqual([
@@ -114,26 +114,40 @@ describe("optional features", () => {
     expect(res.headers.get("location")).toBe("https://bot.test/api/setup");
   });
 
-  it("without ElevenLabs, voice messages get an explanation instead of a job", async () => {
+  it("voice needs no extra key: OpenRouter transcribes the OGG note", async () => {
     await db.query(
       "INSERT INTO users (tg_id, full_name, position, created_at, updated_at) VALUES ($1, 'Олександр Коваленко', 'CEO', 0, 0)",
       [OWNER],
     );
-    const calls = mockFetch([]);
+    let sttBody: { model: string; messages: { content: { type: string; input_audio?: { data: string; format: string } }[] }[] } | undefined;
+    const calls = mockFetch([
+      (url) => (url.pathname.endsWith("/getFile") ? Response.json({ ok: true, result: { file_id: "f", file_path: "voice/f.oga" } }) : undefined),
+      (url) => (url.pathname.includes("/file/bot") ? new Response(new Uint8Array([1, 2, 3])) : undefined),
+      (url, init) => {
+        if (url.hostname !== "openrouter.ai") return undefined;
+        const body = JSON.parse(init.bodyText);
+        if (body.model !== "test/audio-model") return undefined;
+        sttBody = body;
+        return Response.json({ choices: [{ message: { content: " зустріч з Іваном завтра о 10 \n" } }] });
+      },
+    ]);
     const { env, jobs } = testEnv(db);
-    env.ELEVENLABS_API_KEY = "";
     await handleUpdate(env, {
       update_id: 1,
       message: {
-        message_id: 1,
+        message_id: 7,
         date: 0,
         chat: { id: OWNER, type: "private" },
         from: { id: OWNER, is_bot: false, first_name: "O" },
         voice: { file_id: "f", file_unique_id: "u", duration: 3 },
       },
     });
-    expect(jobs).toEqual([]);
-    expect(String(tgCalls(calls, "sendMessage")[0]!.text)).toContain("ELEVENLABS_API_KEY");
+    expect(jobs.map((j) => j.body.type)).toEqual(["voice"]);
+    await runWithRetry(env, jobs.shift()!.body, async () => undefined, 1);
+
+    const audio = sttBody!.messages[0]!.content.find((p) => p.type === "input_audio")!.input_audio!;
+    expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
+    expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>зустріч з Іваном завтра о 10</i>"))).toBe(true);
   });
 
   it("daily cron is open when CRON_SECRET is not set", async () => {

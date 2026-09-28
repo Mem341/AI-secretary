@@ -14,13 +14,12 @@ export const testConfig: Config = {
   PUBLIC_URL: "https://bot.test",
   LLM_MODEL: "test/card-model",
   LLM_MODEL_SUMMARY: "test/summary-model",
-  STT_MODEL: "scribe_v1",
+  STT_MODEL: "test/audio-model",
   TELEGRAM_BOT_TOKEN: "tg-token",
   TELEGRAM_WEBHOOK_SECRET: "tg-secret",
   GOOGLE_CLIENT_ID: "gid",
   GOOGLE_CLIENT_SECRET: "gsecret",
   OPENROUTER_API_KEY: "or-key",
-  ELEVENLABS_API_KEY: "el-key",
   ENCRYPTION_KEY: "test-encryption-key",
   CRON_SECRET: "cron-secret",
   ZOOM_ACCOUNT_ID: "",
@@ -115,7 +114,7 @@ export interface Call {
 type Route = (url: URL, init: RequestInit & { bodyText: string }) => Response | Promise<Response> | undefined;
 
 /**
- * Replaces global fetch with a router over outbound calls (Telegram, Google, OpenRouter, ElevenLabs).
+ * Replaces global fetch with a router over outbound calls (Telegram, Google, OpenRouter, Zoom).
  * Telegram calls succeed by default; any other unrouted call fails the test loudly.
  */
 export function mockFetch(routes: Route[]): Call[] {

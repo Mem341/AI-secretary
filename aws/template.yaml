@@ -33,10 +33,6 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
-  ElevenLabsApiKey:
-    Type: String
-    Default: ""
-    NoEcho: true
   ZoomAccountId:
     Type: String
     Default: ""
@@ -81,7 +77,6 @@ Globals:
         PUBLIC_URL: !Ref PublicUrl
         GOOGLE_CLIENT_ID: !Ref GoogleClientId
         GOOGLE_CLIENT_SECRET: !Ref GoogleClientSecret
-        ELEVENLABS_API_KEY: !Ref ElevenLabsApiKey
         ZOOM_ACCOUNT_ID: !Ref ZoomAccountId
         ZOOM_CLIENT_ID: !Ref ZoomClientId
         ZOOM_CLIENT_SECRET: !Ref ZoomClientSecret

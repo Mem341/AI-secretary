@@ -1,7 +1,10 @@
 import type { Env } from "../env";
 import { expectOk, fetchWithRetry } from "../lib/http";
 
-export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: string } };
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -22,6 +25,28 @@ export function extractJson(text: string): unknown {
   }
 }
 
+async function complete(env: Env, body: Record<string, unknown>): Promise<string> {
+  const res = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      "content-type": "application/json",
+      "HTTP-Referer": env.PUBLIC_URL,
+      "X-Title": "AI-secretary",
+    },
+    body: JSON.stringify(body),
+  });
+  await expectOk("openrouter", res);
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[]; error?: { message: string } };
+  if (data.error) throw new Error(`openrouter: ${data.error.message}`);
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+/** Calls an OpenRouter chat model and returns its plain-text reply. */
+export async function chatText(env: Env, model: string, messages: ChatMessage[]): Promise<string> {
+  return complete(env, { model, messages, temperature: 0 });
+}
+
 /**
  * Calls an OpenRouter chat model and parses a JSON object reply. The model is configurable through
  * LLM_MODEL / LLM_MODEL_SUMMARY (spec section 3). One extra attempt is made when the reply is not valid JSON.
@@ -29,20 +54,7 @@ export function extractJson(text: string): unknown {
 export async function chatJson(env: Env, model: string, messages: ChatMessage[]): Promise<unknown> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-        "content-type": "application/json",
-        "HTTP-Referer": env.PUBLIC_URL,
-        "X-Title": "AI-secretary",
-      },
-      body: JSON.stringify({ model, messages, temperature: 0, response_format: { type: "json_object" } }),
-    });
-    await expectOk("openrouter", res);
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[]; error?: { message: string } };
-    if (data.error) throw new Error(`openrouter: ${data.error.message}`);
-    const content = data.choices?.[0]?.message?.content ?? "";
+    const content = await complete(env, { model, messages, temperature: 0, response_format: { type: "json_object" } });
     try {
       return extractJson(content);
     } catch (err) {

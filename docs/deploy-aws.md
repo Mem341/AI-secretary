@@ -10,7 +10,7 @@ AI-secretary працює однаково на **Vercel** і на **AWS**: то
 Telegram ─ webhook ─┐
 Google   ─ push ────┤                          ┌─▶ Google Calendar / Gmail API
 Браузер  ─ OAuth ───┼─▶ Lambda Function URL ───┼─▶ OpenRouter (LLM)
-Pub/Sub  ─ Gmail ───┤   (ApiFunction)          └─▶ ElevenLabs, Zoom
+Pub/Sub  ─ Gmail ───┤   (ApiFunction)          └─▶ Zoom (необовʼязково)
 Ви ─ /api/setup ────┘         │
 EventBridge (щодня) ─▶ CronFunction      Neon Postgres (поза AWS, по HTTPS)
 ```
@@ -58,7 +58,7 @@ sam deploy
 
 Обовʼязкові: `OwnerTelegramId`, `TelegramBotToken`, `OpenRouterApiKey`, `GoogleClientId`, `GoogleClientSecret`,
 `DatabaseUrl`.
-Необовʼязкові: `ElevenLabsApiKey` (голосові), `ZoomAccountId`, `ZoomClientId`,
+Необовʼязкові: `ZoomAccountId`, `ZoomClientId`,
 `ZoomClientSecret`, `GmailPubsubTopic`, `LlmModel`, `PublicUrl` (свій домен), `EncryptionKey`, `CronSecret`.
 Значення за замовчуванням і пояснення — у `aws/template.yaml`.
 

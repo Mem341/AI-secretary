@@ -8,7 +8,7 @@
 Кожен розгортає **власну копію** — на **Vercel** (одна кнопка) або в **AWS** (свій акаунт) — безкоштовно для
 однієї людини, без серверів.
 
-**Node.js + TypeScript · Vercel Functions або AWS Lambda · Neon Postgres · OpenRouter · ElevenLabs · Zoom**
+**Node.js + TypeScript · Vercel Functions або AWS Lambda · Neon Postgres · OpenRouter · Zoom (необовʼязково)**
 
 > 🔒 **Кожна копія служить рівно одній людині** — тій, чий Telegram ID вказано в `OWNER_TELEGRAM_ID`.
 > Повідомлення від усіх інших бот мовчки ігнорує: сторонній навіть не дізнається, що бот працює.
@@ -32,7 +32,8 @@
    | `OPENROUTER_API_KEY` | ключ до ШІ | [openrouter.ai/keys](https://openrouter.ai/keys) |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | доступ до Google Calendar і Gmail | Google Cloud Console, 5 хвилин — [інструкція](docs/what-you-need.md#4-google-client-id-і-client-secret) |
 
-   Більше нічого не треба. Голосові (ElevenLabs), Zoom і сповіщення про пошту — необовʼязкові, додаються пізніше.
+   Більше нічого не треба: голосові розпізнає той самий OpenRouter. Zoom і миттєві сповіщення про пошту —
+   необовʼязкові, додаються, коли захочете.
 
 2. **Натисніть «Deploy with Vercel»**, вставте ці значення й погодьтеся підключити безкоштовну базу **Neon**.
    Якщо Vercel не запропонував Neon — після деплою: проєкт → **Storage** → **Create Database** → **Neon**.
@@ -62,7 +63,6 @@ sam deploy
 
 | Змінна | Навіщо |
 |---|---|
-| `ELEVENLABS_API_KEY` | розпізнавання голосових ([ключ](https://elevenlabs.io/app/settings/api-keys)) |
 | `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | зустрічі в Zoom (застосунок Server-to-Server OAuth) |
 | `GMAIL_PUBSUB_TOPIC` | миттєві сповіщення про нові листи (топік Cloud Pub/Sub) |
 | `LLM_MODEL`, `LLM_MODEL_SUMMARY` | типові моделі OpenRouter (`google/gemini-2.5-flash`, `anthropic/claude-sonnet-4.5`); свою модель можна обрати й у боті, /settings |
@@ -110,7 +110,7 @@ sam deploy
 Telegram ─ webhook ─▶ /api/telegram ─────┐
 Google   ─ push ────▶ /api/gcal-push ────┤  Vercel Functions   ┌─▶ Google Calendar / Gmail API
 Pub/Sub  ─ Gmail ───▶ /api/gmail-push ───┤        або          ├─▶ OpenRouter (LLM)
-Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─ AWS Lambda ────────┼─▶ ElevenLabs (голос)
+Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─ AWS Lambda ────────┼─▶ OpenRouter (голос → текст)
 Cron (щодня) ───────▶ /api/cron/daily ───┤                     └─▶ Zoom
 Ви ─────────────────▶ /api/setup ────────┘         │
                                              Neon Postgres
@@ -157,7 +157,7 @@ src/telegram/        Bot API, маршрутизація, перевірка в�
 src/google/          OAuth, Calendar + Gmail API, push-синхронізація
 src/zoom/            Zoom API
 src/db/              Postgres і міграції схеми
-src/llm/, src/stt/   OpenRouter, ElevenLabs
+src/llm/, src/stt/   OpenRouter: ШІ і розпізнавання голосових
 test/                тести (Postgres у памʼяті через PGlite)
 ```
 </details>

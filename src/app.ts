@@ -7,7 +7,6 @@ import {
   googleConfigured,
   googleRedirectUri,
   REQUIRED_VARS,
-  voiceConfigured,
   zoomConfigured,
 } from "./env";
 import { decodePush, gmailPushToken, type PubSubPush, startGmailWatch } from "./google/gmailPush";
@@ -305,16 +304,6 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
           title: "Zoom (необовʼязково)",
           details: `Google Meet працює без налаштувань. Щоб створювати зустрічі в Zoom: у <a href="https://marketplace.zoom.us/develop/create">Zoom Marketplace</a>
 створіть застосунок <b>Server-to-Server OAuth</b> зі scope ${code("meeting:write:admin")} і додайте ${code("ZOOM_ACCOUNT_ID")}, ${code("ZOOM_CLIENT_ID")}, ${code("ZOOM_CLIENT_SECRET")}.`,
-        },
-  );
-
-  steps.push(
-    voiceConfigured(env)
-      ? { status: "ok", title: "Голосові повідомлення", details: "ElevenLabs підключено." }
-      : {
-          status: "optional",
-          title: "Голосові повідомлення (необовʼязково)",
-          details: `Щоб бот розумів голосові, додайте ${code("ELEVENLABS_API_KEY")} (<a href="https://elevenlabs.io/app/settings/api-keys">ключ ElevenLabs</a>).`,
         },
   );
 
