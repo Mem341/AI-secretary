@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ai-secretary",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Cron: renew Google push channels daily; full calendar sync every 6 h as a safety net.
+  // Stage 2 adds the every-minute reminders cron.
+  "triggers": {
+    "crons": ["17 3 * * *", "5 */6 * * *"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ai-secretary",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "ai-secretary-files" }],
+
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "ai-secretary-jobs" }],
+    "consumers": [
+      {
+        "queue": "ai-secretary-jobs",
+        "max_batch_size": 5,
+        "max_batch_timeout": 1,
+        "max_retries": 2
+      }
+    ]
+  },
+
+  "vars": {
+    // Public https URL of this worker, no trailing slash (used for OAuth redirect and Google push).
+    "PUBLIC_URL": "https://ai-secretary.example.workers.dev",
+    // Comma-separated Telegram IDs of administrators.
+    "ADMIN_TG_IDS": "",
+    // OpenRouter model ids; change without touching code. LLM_MODEL must support images (screenshots).
+    "LLM_MODEL": "google/gemini-2.5-flash",
+    "LLM_MODEL_SUMMARY": "anthropic/claude-sonnet-4.5",
+    // ElevenLabs speech-to-text model.
+    "STT_MODEL": "scribe_v1"
+  }
+
+  // Secrets (wrangler secret put ...):
+  //   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET,
+  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+  //   OPENROUTER_API_KEY, ELEVENLABS_API_KEY,
+  //   ENCRYPTION_KEY
+}
