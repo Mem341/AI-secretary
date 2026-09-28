@@ -8,9 +8,9 @@ export const GOOGLE_SCOPES = [
   "email",
   "https://www.googleapis.com/auth/calendar.events",
   // Read/write/send Gmail except permanently deleting; plus managing label definitions.
-  // NOTE: these are Google "restricted" scopes. For a personal, self-hosted deployment (the owner is both the
-  // GCP project's developer and its only consenting user) that is fine, but an OAuth consent screen left in
-  // "Testing" caps refresh tokens at 7 days regardless of scope — see /api/setup for the trade-off.
+  // NOTE: these are Google "restricted" scopes. A published but unverified app still works for its single owner
+  // (Google shows an "unverified app" warning); a consent screen left in "Testing" expires grants after 7 days.
+  // See /api/setup for the options.
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.labels",
 ];

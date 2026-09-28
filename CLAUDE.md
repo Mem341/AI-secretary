@@ -1,31 +1,42 @@
 # AI-secretary
 
-Open-source personal Telegram secretary: anyone deploys their own copy to their own Vercel; each copy serves one
-owner (`OWNER_TELEGRAM_ID`). Creates Google Calendar meetings from text, voice, forwarded chats and screenshots.
-Node.js + TypeScript on **Vercel Functions**, Postgres (**Neon**), OpenRouter (LLM), ElevenLabs (speech-to-text).
+Open-source personal Telegram secretary: anyone deploys their own copy (Vercel or AWS); each copy serves one owner
+(`OWNER_TELEGRAM_ID`). Creates Google Calendar meetings from text, voice, forwarded chats and screenshots, reports
+calendar changes, reschedules/cancels by reply, and works with Gmail. Node.js + TypeScript, Postgres (**Neon**),
+OpenRouter (LLM, model selectable per owner), ElevenLabs (speech-to-text), optional Zoom.
 
 ## Deploying
 
-When asked to deploy or set up the bot, follow `.claude/skills/deploy-vercel/SKILL.md` (also available as
-the `/deploy-vercel` skill). It lists exactly what to ask the owner before deploying. After a deploy, the
-`/api/setup` page registers the Telegram webhook and shows what is left to configure.
+The same code runs on both platforms; pick the skill by what the user asked for:
+
+- **Vercel** → `.claude/skills/deploy-vercel/SKILL.md` (`/deploy-vercel`).
+- **AWS** (Amazon, Lambda) → `.claude/skills/deploy-aws/SKILL.md` (`/deploy-aws`); background: `docs/deploy-aws.md`.
+- Platform not named → ask once: Vercel (fastest, one button) or AWS (their own AWS account).
+
+Each skill lists exactly what to ask the owner. After any deploy, the `/api/setup` page registers the Telegram
+webhook and shows what is left to configure (Google, Gmail push, Zoom, voice).
 
 ## Layout
 
-- `api/` — Vercel Functions (thin wrappers): `telegram`, `gcal-push`, `oauth/start`, `oauth/callback`,
-  `cron/daily`, `health`, `setup`.
-- `src/app.ts` — HTTP handlers and the background job runner; `src/vercel.ts` — Vercel bootstrap.
-- `src/jobs.ts` — background jobs (run after the response via `waitUntil`, 3 attempts).
-- `src/bot/` — onboarding/settings, meeting card, creation flow. `src/telegram/` — Bot API, update routing.
-- `src/google/` — OAuth, Calendar API, push sync. `src/db/` — Postgres access and schema migrations.
+- `api/` — Vercel Functions (thin wrappers). `src/aws.ts` — AWS Lambda adapter (Function URL + cron handler).
+  `src/router.ts` — the same endpoints routed in code (AWS, any Node host). `aws/template.yaml` — AWS SAM stack.
+- `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap.
+- `src/jobs.ts` — background jobs (run after the response, 3 attempts).
+- `src/bot/` — `meetings.ts` (meeting cards + the text router), `actions.ts` (reschedule/cancel/note by reply),
+  `mail.ts` (Gmail agent), `onboarding.ts` (profile, /settings, model choice), `card.ts`.
+- `src/google/` — OAuth, Calendar API + push sync (instant notices), Gmail API + Pub/Sub push.
+- `src/db/` — Postgres access and schema migrations; `src/zoom/` — Zoom API.
 
 ## Rules
 
 - The bot answers only `OWNER_TELEGRAM_ID`; keep every entry point behind that check.
 - Keep the deployment generic (no company-specific names or data): only `OWNER_TELEGRAM_ID`,
-  `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` are required; new features must be optional or derived.
+  `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` (+ a Postgres URL) are required; new features must be optional or derived.
+- Anything that writes to the calendar or sends/removes mail goes through a confirmation card; read-only and
+  easily reversible actions may run at once. Mark the bot's own Calendar writes with `markSelfWrite` first.
+- Keep the Vercel `api/*` files, `src/router.ts` and the docs' URLs in sync when adding an endpoint.
 - SQL uses `$1…` placeholders via `src/db/client.ts`. Schema changes: append a new entry to `MIGRATIONS` in
   `src/db/schema.ts`; never edit an applied migration.
 - Compiles to CommonJS (`tsconfig.json`), which Vercel's Node runtime needs for extensionless imports.
-- Check before pushing: `npm run typecheck && npm test` (tests use in-memory Postgres via PGlite and mock all
-  outbound HTTP).
+- Check before pushing: `npm run typecheck && npm test && npm run build:aws` (tests use in-memory Postgres via
+  PGlite and mock all outbound HTTP).

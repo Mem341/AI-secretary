@@ -1,0 +1,9 @@
+# Copy to aws/samconfig.toml (git-ignored) or pass the same values with --parameter-overrides.
+version = 0.1
+[default.deploy.parameters]
+stack_name = "ai-secretary"
+region = "eu-central-1"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = false
+parameter_overrides = "OwnerTelegramId=\"123456789\" TelegramBotToken=\"123:ABC\" OpenRouterApiKey=\"sk-or-...\" DatabaseUrl=\"postgresql://...\""

@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AI-secretary — personal Telegram secretary (Google Calendar, Gmail) for one owner.
+  One Lambda behind a Function URL serves every endpoint; a second Lambda runs the daily cron.
+  Build first: `npm ci && npm run build:aws`, then `sam deploy` from the aws/ folder.
+  See .claude/skills/deploy-aws/SKILL.md and docs/deploy-aws.md.
+
+Parameters:
+  OwnerTelegramId:
+    Type: String
+    Description: Your numeric Telegram ID (@userinfobot). The bot answers only this person.
+  TelegramBotToken:
+    Type: String
+    NoEcho: true
+    Description: Bot token from @BotFather.
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Description: OpenRouter API key (https://openrouter.ai/keys).
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: Postgres connection string (e.g. a free Neon database, https://neon.tech).
+  PublicUrl:
+    Type: String
+    Default: ""
+    Description: Optional custom domain. Empty = the Function URL, detected from the first request.
+  GoogleClientId:
+    Type: String
+    Default: ""
+  GoogleClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+  ElevenLabsApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+  ZoomAccountId:
+    Type: String
+    Default: ""
+  ZoomClientId:
+    Type: String
+    Default: ""
+  ZoomClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+  GmailPubsubTopic:
+    Type: String
+    Default: ""
+    Description: Optional projects/<id>/topics/<name> for instant new-mail notifications.
+  LlmModel:
+    Type: String
+    Default: ""
+    Description: Optional OpenRouter model id (default google/gemini-2.5-flash). The owner can also change it in /settings.
+  EncryptionKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional. Empty = derived from the bot token. Never change it once the calendar is connected.
+  CronSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    MemorySize: 512
+    Timeout: 60
+    CodeUri: ../dist/aws/
+    Environment:
+      Variables:
+        OWNER_TELEGRAM_ID: !Ref OwnerTelegramId
+        TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
+        OPENROUTER_API_KEY: !Ref OpenRouterApiKey
+        DATABASE_URL: !Ref DatabaseUrl
+        PUBLIC_URL: !Ref PublicUrl
+        GOOGLE_CLIENT_ID: !Ref GoogleClientId
+        GOOGLE_CLIENT_SECRET: !Ref GoogleClientSecret
+        ELEVENLABS_API_KEY: !Ref ElevenLabsApiKey
+        ZOOM_ACCOUNT_ID: !Ref ZoomAccountId
+        ZOOM_CLIENT_ID: !Ref ZoomClientId
+        ZOOM_CLIENT_SECRET: !Ref ZoomClientSecret
+        GMAIL_PUBSUB_TOPIC: !Ref GmailPubsubTopic
+        LLM_MODEL: !Ref LlmModel
+        ENCRYPTION_KEY: !Ref EncryptionKey
+        CRON_SECRET: !Ref CronSecret
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: aws.handler
+      Description: Telegram webhook, Google push, OAuth, setup page.
+      FunctionUrlConfig:
+        AuthType: NONE
+        # Streaming: the answer goes out first, background work (LLM, sync) finishes afterwards.
+        InvokeMode: RESPONSE_STREAM
+
+  CronFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: aws.cronHandler
+      Description: Daily renewal of Google push channels and safety-net calendar sync.
+      Timeout: 300
+      Events:
+        Daily:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(17 3 * * ? *)
+            ScheduleExpressionTimezone: UTC
+
+Outputs:
+  FunctionUrl:
+    Description: Open <FunctionUrl>api/setup to finish the setup (registers the Telegram webhook).
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  GoogleRedirectUri:
+    Description: Authorized redirect URI for the Google OAuth client (when PublicUrl is empty).
+    Value: !Sub "${ApiFunctionUrl.FunctionUrl}api/oauth/callback"

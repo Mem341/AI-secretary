@@ -62,11 +62,17 @@ function derive(botToken: string, purpose: string): string {
   return createHash("sha256").update(`ai-secretary:${purpose}:${botToken}`).digest("hex");
 }
 
-/** Reads and validates the configuration; lists every missing variable at once. */
-export function loadConfig(source: Record<string, string | undefined> = process.env): Config {
+/**
+ * Reads and validates the configuration; lists every missing variable at once. `fallbackPublicUrl` is used when
+ * neither PUBLIC_URL nor Vercel's production URL is set (AWS: the Function URL the request arrived on).
+ */
+export function loadConfig(source: Record<string, string | undefined> = process.env, fallbackPublicUrl = ""): Config {
   const val = (k: string) => source[k]?.trim() ?? "";
   const missing: string[] = REQUIRED_VARS.filter((k) => !val(k));
-  const publicUrl = val("PUBLIC_URL") || (val("VERCEL_PROJECT_PRODUCTION_URL") ? `https://${val("VERCEL_PROJECT_PRODUCTION_URL")}` : "");
+  const publicUrl =
+    val("PUBLIC_URL") ||
+    (val("VERCEL_PROJECT_PRODUCTION_URL") ? `https://${val("VERCEL_PROJECT_PRODUCTION_URL")}` : "") ||
+    fallbackPublicUrl;
   if (!publicUrl) missing.push("PUBLIC_URL");
   if (missing.length) throw new ConfigError(`Missing environment variables: ${missing.join(", ")}`);
 
@@ -96,6 +102,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     ZOOM_CLIENT_SECRET: val("ZOOM_CLIENT_SECRET"),
     GMAIL_PUBSUB_TOPIC: val("GMAIL_PUBSUB_TOPIC"),
   };
+}
+
+/** Postgres connection string: DATABASE_URL (Neon integration, any host) or POSTGRES_URL. */
+export function databaseUrl(source: Record<string, string | undefined> = process.env): string | undefined {
+  return source.DATABASE_URL || source.POSTGRES_URL;
 }
 
 export function isOwner(env: Config, tgId: number | undefined): boolean {

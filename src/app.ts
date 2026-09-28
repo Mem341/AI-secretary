@@ -272,8 +272,9 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
 <li><a href="https://console.cloud.google.com/apis/credentials">Credentials</a> → Create credentials → OAuth client ID → <b>Web application</b>, Authorized redirect URI: ${code(redirect)}</li>
 <li>Додайте змінні ${code("GOOGLE_CLIENT_ID")} і ${code("GOOGLE_CLIENT_SECRET")} у налаштуваннях хостингу та перерозгорніть.</li></ol>
 <b>Про доступ до пошти.</b> Gmail — «restricted» дозвіл Google. Для Workspace (Internal) обмежень немає. Для звичайного Gmail
-(External) залиште застосунок у режимі <b>Testing</b> і додайте себе в Test users — тоді Google просить перепідключення раз на 7 днів
-(бот нагадає кнопкою); або пройдіть верифікацію Google, щоб підключення не спливало.`,
+(External) натисніть <b>Publish app</b>: під час входу Google покаже «застосунок не перевірено» — <i>Advanced → Continue</i>
+(для особистого використання це нормально, ліміт 100 користувачів). У режимі <b>Testing</b> Google вимагає перепідключення раз на
+7 днів (бот нагадає кнопкою). Щоб прибрати попередження зовсім — верифікація застосунку в Google.`,
         },
   );
 

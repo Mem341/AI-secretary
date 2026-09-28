@@ -166,6 +166,18 @@ export const MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      // Small key/value settings learned at runtime, e.g. the public URL of an AWS Function URL deployment
+      // (taken from the first request's host so the scheduled cron, which has no request, knows it too).
+      `CREATE TABLE IF NOT EXISTS app_settings (
+        key        TEXT   PRIMARY KEY,
+        value      TEXT   NOT NULL,
+        updated_at BIGINT NOT NULL
+      )`,
+    ],
+  },
 ];
 
 /** Applies pending migrations. Idempotent and safe to run concurrently (IF NOT EXISTS / ON CONFLICT). */

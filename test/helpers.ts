@@ -55,6 +55,7 @@ const TABLES = [
   "contacts",
   "message_links",
   "recent_writes",
+  "app_settings",
   "users",
 ];
 
