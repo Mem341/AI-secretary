@@ -21,25 +21,28 @@
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary&products=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%5D)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY%2CGOOGLE_CLIENT_ID%2CGOOGLE_CLIENT_SECRET&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key%2C+Google+OAuth+client+ID+and+secret&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary&products=%5B%7B%22type%22%3A%22integration%22%2C%22protocol%22%3A%22storage%22%2C%22productSlug%22%3A%22neon%22%2C%22integrationSlug%22%3A%22neon%22%7D%5D)
 
-1. **Підготуйте три значення:**
+1. **Підготуйте чотири речі** (покроково — [docs/what-you-need.md](docs/what-you-need.md)):
 
    | Змінна | Що це | Де взяти |
    |---|---|---|
    | `TELEGRAM_BOT_TOKEN` | токен вашого бота | [@BotFather](https://t.me/BotFather) → `/newbot` |
    | `OWNER_TELEGRAM_ID` | ваш **числовий** Telegram ID | напишіть [@userinfobot](https://t.me/userinfobot) |
-   | `OPENROUTER_API_KEY` | ключ до LLM | [openrouter.ai/keys](https://openrouter.ai/keys) |
+   | `OPENROUTER_API_KEY` | ключ до ШІ | [openrouter.ai/keys](https://openrouter.ai/keys) |
+   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | доступ до Google Calendar і Gmail | Google Cloud Console, 5 хвилин — [інструкція](docs/what-you-need.md#4-google-client-id-і-client-secret) |
+
+   Більше нічого не треба. Голосові (ElevenLabs), Zoom і сповіщення про пошту — необовʼязкові, додаються пізніше.
 
 2. **Натисніть «Deploy with Vercel»**, вставте ці значення й погодьтеся підключити безкоштовну базу **Neon**.
    Якщо Vercel не запропонував Neon — після деплою: проєкт → **Storage** → **Create Database** → **Neon**.
 3. **Відкрийте свій сайт** `https://<ваш-проєкт>.vercel.app` — відкриється сторінка налаштування. Вона сама
-   підключить Telegram-бота і покаже, що лишилось: Google Calendar (покрокова інструкція з готовим Redirect URI)
-   і, за бажанням, голосові.
+   підключить Telegram-бота і покаже ваш **Redirect URI** — додайте його в Google-клієнт (Clients → Authorized
+   redirect URIs).
 4. **Напишіть своєму боту `/start`**, заповніть профіль і натисніть «Підключити Google Calendar». Готово.
 
 > 💡 Можна доручити все агенту **Claude Code** з підключеним Vercel MCP: «розгорни бота на Vercel». Він візьме
-> інструкцію з `.claude/skills/deploy-vercel/SKILL.md` і спитає лише те, чого не зможе зробити сам.
+> інструкцію з `.claude/skills/deploy-vercel/SKILL.md`, спитає рівно ці 4 речі, перевірить їх і зробить решту сам.
 
 ### AWS
 
@@ -47,7 +50,7 @@
 
 ```bash
 npm ci && npm run build:aws
-cd aws && cp samconfig.toml.example samconfig.toml   # впишіть 3 значення + рядок підключення Postgres
+cd aws && cp samconfig.toml.example samconfig.toml   # ті самі 4 речі + рядок підключення Neon Postgres
 sam deploy
 ```
 
@@ -59,7 +62,6 @@ sam deploy
 
 | Змінна | Навіщо |
 |---|---|
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Calendar і Gmail — сторінка налаштування покаже, як створити |
 | `ELEVENLABS_API_KEY` | розпізнавання голосових ([ключ](https://elevenlabs.io/app/settings/api-keys)) |
 | `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | зустрічі в Zoom (застосунок Server-to-Server OAuth) |
 | `GMAIL_PUBSUB_TOPIC` | миттєві сповіщення про нові листи (топік Cloud Pub/Sub) |
