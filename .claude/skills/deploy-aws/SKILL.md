@@ -1,6 +1,6 @@
 ---
 name: deploy-aws
-description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own AWS account (Lambda Function URL + EventBridge cron via AWS SAM, Postgres on Neon). Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret) plus a Neon connection string and AWS access, validate them, build, deploy, add the Google redirect URI, finish on /api/setup. Use when the user asks to deploy, redeploy, update or set up the bot on AWS / Amazon / Lambda.
+description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own AWS account (Lambda Function URL + EventBridge cron via AWS SAM, no database). Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret) plus AWS access, validate them, build, deploy, add the Google redirect URI, finish on /api/setup. Use when the user asks to deploy, redeploy, update or set up the bot on AWS / Amazon / Lambda.
 ---
 
 # Deploy AI-secretary to AWS
@@ -11,7 +11,8 @@ AI-secretary is open source. Anyone can run their own copy. Each copy answers ex
 On AWS it runs as:
 - **ApiFunction**: one Lambda behind a **Function URL** (response streaming) that serves every `/api/*` endpoint.
 - **CronFunction**: the daily job, run by EventBridge.
-- **Postgres on Neon**: outside AWS, reached over HTTPS, so no VPC or NAT is needed.
+- **No database.** The only persistent item, the Google grant, sits encrypted in one pinned message of the owner's
+  chat with the bot; cards carry their own data inside Telegram messages; the calendar is read live from Google.
 
 The infrastructure is defined in `aws/template.yaml` (SAM). `npm run build:aws` bundles the code into
 `dist/aws/aws.js`. Background reading for humans: `docs/deploy-aws.md`.
@@ -31,8 +32,7 @@ Telegram. Ask only for what they alone can provide, and do everything else yours
 - **Zoom is optional:** if the user offers Zoom credentials (Account ID, Client ID, Client Secret of a
   Server-to-Server OAuth app), pass `ZoomAccountId`, `ZoomClientId` and `ZoomClientSecret`; otherwise skip it.
   Google Meet works without it.
-- **If the user lacks an item,** send the steps for that item only from `docs/what-you-need.md` (§1–§4; the Neon
-  steps are in Step 1 below). Translate them if needed and keep the links.
+- **If the user lacks an item,** send the steps for that item only from `docs/what-you-need.md` (§1–§4). Translate them if needed and keep the links.
 - **Validate every value (Step 2) before deploying.**
 - **Secrets:**
   - Never repeat them back and never commit them. `aws/samconfig.toml` is git-ignored for that reason.
@@ -58,12 +58,10 @@ Send this (adapted to the user's language) and wait for the answers:
 > 3. **Ключ OpenRouter**: https://openrouter.ai/keys, вигляду `sk-or-v1-…` (на рахунку мають бути кошти)
 > 4. **Google Client ID і Client Secret** для календаря й пошти. Якщо їх ще немає, скажіть, і я дам покрокову
 >    інструкцію на 5 хвилин.
-> 5. **Рядок підключення до бази**: безкоштовно на https://neon.tech → Create project → Connect → скопіюйте
->    `postgresql://…?sslmode=require`
 >
 > Також: у вас **Google Workspace** (пошта компанії) чи **звичайний Gmail**?
 
-If AWS access failed in Step 0, add a sixth point asking the user to connect AWS (a profile, SSO or AWS MCP).
+If AWS access failed in Step 0, add a fifth point asking the user to connect AWS (a profile, SSO or AWS MCP).
 
 If the user explicitly wants to deploy **without Google for now**:
 - Proceed with the other items and skip Steps 2d and 4.
@@ -77,7 +75,6 @@ If the user explicitly wants to deploy **without Google for now**:
 | b. Telegram ID | Digits only. Not a @username, and not the bot's own ID (the part of the token before `:`). | — |
 | c. OpenRouter key | Starts with `sk-or-`. | `curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/key` → HTTP 200. If there is no balance, ask the user to top up. |
 | d. Google client | ID ends with `.apps.googleusercontent.com`. Secret usually starts with `GOCSPX-`. | Checked for real in Step 5. |
-| e. Postgres URL | Starts with `postgresql://` or `postgres://` and contains `sslmode=require`. | The deployed `/api/health` reports `"database": true`. |
 
 If a check fails, say which item is wrong and why, and ask for that item only.
 
@@ -91,7 +88,7 @@ sam deploy \
   --stack-name ai-secretary --region <region> \
   --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset \
   --parameter-overrides \
-    OwnerTelegramId=<id> TelegramBotToken=<token> OpenRouterApiKey=<key> DatabaseUrl='<postgres-url>' \
+    OwnerTelegramId=<id> TelegramBotToken=<token> OpenRouterApiKey=<key> \
     GoogleClientId=<client-id> GoogleClientSecret=<client-secret>
 ```
 
@@ -111,7 +108,7 @@ To make later updates one command, offer to save the parameters in `aws/samconfi
 
 1. Read the stack outputs: `FunctionUrl` and `GoogleRedirectUri` (`<FunctionUrl>api/oauth/callback`).
 2. Open `<FunctionUrl>api/setup`.
-   - The page registers the Telegram webhook itself and stores the public URL for the cron.
+   - The page registers the Telegram webhook itself (the cron gets the Function URL from the stack).
    - It shows the same redirect URI.
 3. Tell the user to add this exact URI to their OAuth client: Google Cloud Console →
    [Clients](https://console.cloud.google.com/auth/clients) → their client → **Authorized redirect URIs** →
@@ -121,12 +118,13 @@ To make later updates one command, offer to save the parameters in `aws/samconfi
 
 ## Step 5 — owner connects, verify
 
-1. The user sends `/start` to their bot and fills in the profile.
-2. They press «Підключити Google Calendar».
+1. The user sends `/start` to their bot (there is no questionnaire).
+2. They press «Підключити Google». The bot pins a «🔐 Google підключено» message: the encrypted grant, which must
+   stay pinned.
    - Personal Gmail: they click **Advanced → Go to AI-secretary**.
    - They tick all permissions.
 3. Smoke test: they send «зустріч з тестом завтра о 10:00» → «Створити». The event must appear in Google Calendar.
-4. `curl <FunctionUrl>api/health` must return `"ok": true`, `"database": true` and `"telegram_webhook": true`.
+4. `curl <FunctionUrl>api/health` must return `"ok": true` and `"telegram_webhook": true`; after the owner connects Google, `"google_connected": true`.
 5. Logs: `sam logs --stack-name ai-secretary --name ApiFunction --tail`, or CloudWatch through the MCP.
 
 ## Step 6 — final report to the user
@@ -140,7 +138,9 @@ Keep it short:
 Finish with one line on optional extras. The user can add these any time as stack parameters; `/api/setup` shows
 the steps:
 - Zoom: `ZoomAccountId`, `ZoomClientId`, `ZoomClientSecret`;
-- instant new-mail notices: `GmailPubsubTopic`.
+- instant new-mail notices: `GmailPubsubTopic`;
+- profile and defaults for event descriptions: `OwnerName` (default: their Telegram name), `OwnerPosition`,
+  `OwnerPhone`, `DefaultDurationMin`, `DefaultFormat`, `DefaultAddress`, and `LlmModel`.
 
 ## Troubleshooting
 
@@ -148,8 +148,6 @@ the steps:
 |---------|-------------|
 | **403 from the Function URL** | The public invoke permission is missing. `AuthType: NONE` needs `lambda:InvokeFunctionUrl` (SAM adds it). On newer accounts it also needs `lambda:InvokeFunction` for principal `*`, limited to Function URL calls. Add it following the current AWS docs. |
 | Streaming unavailable | For `ApiFunction`, set `InvokeMode: BUFFERED` and `Handler: aws.bufferedHandler`. It works the same but replies only after background work finishes. |
-| Cron says PUBLIC_URL is missing | Nobody has opened the URL yet. Open `/api/setup` once. |
 | Google: `redirect_uri_mismatch` | The URI in the Google client differs from `GoogleRedirectUri`. Copy it exactly. |
 | Google: `access_denied` / "app not available" | The External app is still in Testing. Publish it: Audience → Publish app. |
-| `"database": false` | Wrong Neon URL, or it is missing `?sslmode=require`. |
 | Anything else | The bot reports errors to its owner, and `/errors` lists them. |

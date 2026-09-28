@@ -1,5 +1,6 @@
-import type { Meeting } from "../db/meetings";
-import { durationOf, firstName, formatOf, type MeetingFormat, type User } from "../db/users";
+import type { Meeting } from "../google/sync";
+import { PROP_DRAFT, PROP_START } from "../google/sync";
+import { durationOf, firstName, formatOf, type MeetingFormat, type User } from "./owner";
 import { esc } from "../telegram/api";
 import {
   DAY,
@@ -266,7 +267,8 @@ export function buildEventBody(card: Card, owner: User, draftId: string, zoomJoi
     guestsCanModify: true,
     guestsCanInviteOthers: true,
     reminders: { useDefault: true },
-    extendedProperties: { private: { aiSecretaryDraft: draftId } },
+    // The start is remembered on the event, so the push for this very write is not reported as someone else's change.
+    extendedProperties: { private: { [PROP_DRAFT]: draftId, [PROP_START]: String(start.getTime()) } },
   };
   if (card.format === "google_meet") {
     event.conferenceData = {

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Db } from "./db/client";
 import type { Job } from "./jobs";
 
 /**
@@ -20,7 +19,7 @@ export interface Config {
   OPENROUTER_API_KEY: string;
   /** Header secret of the Telegram webhook; derived from the bot token unless set. */
   TELEGRAM_WEBHOOK_SECRET: string;
-  /** Encrypts stored Google tokens; derived from the bot token unless set. Must not change once in use. */
+  /** Encrypts the Google grant kept in the chat; derived from the bot token unless set. Changing it means reconnecting Google. */
   ENCRYPTION_KEY: string;
   /** Google Calendar; "" until the owner creates an OAuth client (see /api/setup). */
   GOOGLE_CLIENT_ID: string;
@@ -36,6 +35,15 @@ export interface Config {
    * push and Gmail actions still work on demand (e.g. "перевір пошту").
    */
   GMAIL_PUBSUB_TOPIC: string;
+
+  // Optional profile for event descriptions; the name defaults to the owner's Telegram name.
+  OWNER_NAME: string;
+  OWNER_POSITION: string;
+  OWNER_PHONE: string;
+  /** Meeting defaults: duration in minutes, format (offline | google_meet | zoom), address for offline meetings. */
+  DEFAULT_DURATION_MIN: number;
+  DEFAULT_FORMAT: "offline" | "google_meet" | "zoom";
+  DEFAULT_ADDRESS: string;
 }
 
 export interface JobQueue {
@@ -44,7 +52,6 @@ export interface JobQueue {
 }
 
 export interface Env extends Config {
-  db: Db;
   jobs: JobQueue;
 }
 
@@ -99,12 +106,22 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     ZOOM_CLIENT_ID: val("ZOOM_CLIENT_ID"),
     ZOOM_CLIENT_SECRET: val("ZOOM_CLIENT_SECRET"),
     GMAIL_PUBSUB_TOPIC: val("GMAIL_PUBSUB_TOPIC"),
+    OWNER_NAME: val("OWNER_NAME"),
+    OWNER_POSITION: val("OWNER_POSITION"),
+    OWNER_PHONE: val("OWNER_PHONE"),
+    DEFAULT_DURATION_MIN: durationVal(val("DEFAULT_DURATION_MIN")),
+    DEFAULT_FORMAT: formatVal(val("DEFAULT_FORMAT")),
+    DEFAULT_ADDRESS: val("DEFAULT_ADDRESS"),
   };
 }
 
-/** Postgres connection string: DATABASE_URL (Neon integration, any host) or POSTGRES_URL. */
-export function databaseUrl(source: Record<string, string | undefined> = process.env): string | undefined {
-  return source.DATABASE_URL || source.POSTGRES_URL;
+function durationVal(v: string): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 5 && n <= 12 * 60 ? Math.round(n) : 60;
+}
+
+function formatVal(v: string): Config["DEFAULT_FORMAT"] {
+  return v === "google_meet" || v === "zoom" ? v : "offline";
 }
 
 export function isOwner(env: Config, tgId: number | undefined): boolean {

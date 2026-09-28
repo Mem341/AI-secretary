@@ -1,58 +1,58 @@
-import { parseActionDraft } from "./bot/actions";
-import { parseMailDraft } from "./bot/mail";
-import { editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
+import { parseAction } from "./bot/actions";
+import { parseMail } from "./bot/mail";
+import { type CardData, type Draft, editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
 import { helpText } from "./bot/onboarding";
-import { getDraft, transition } from "./db/drafts";
-import { pruneSelfWrites } from "./db/selfWrites";
-import { getUserById } from "./db/users";
+import { loadOwner } from "./bot/owner";
 import { type Env, gmailPushConfigured } from "./env";
 import { gmailSync, startGmailWatch } from "./google/gmailPush";
-import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope } from "./google/oauth";
-import { fullSync, incrementalSync, startWatch } from "./google/sync";
+import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
+import { markUpcoming, startWatch, syncRecent } from "./google/sync";
 import { logError } from "./lib/errors";
 import { transcribe } from "./stt/transcribe";
 import { esc, Telegram } from "./telegram/api";
+import type { TgMessage } from "./telegram/types";
 
-/** Background jobs. They run after the HTTP response (Vercel `waitUntil`), with retries. */
+/**
+ * Background jobs. They run after the HTTP response (Vercel `waitUntil`, AWS response streaming), with retries.
+ * There is no database: a job carries everything it needs.
+ */
 export type Job =
   /** Debounced batch of forwarded messages / screenshots; processed only if `seq` is still the latest. */
-  | { type: "batch"; draftId: string; seq: number }
-  /** Build a card from the draft's source text. */
-  | { type: "parse"; draftId: string }
-  /** Apply a free-text correction to the card. */
-  | { type: "edit"; draftId: string; instruction: string }
-  /** Classify a reply about an existing meeting (reschedule/cancel/note) and show the confirmation. */
-  | { type: "action_parse"; draftId: string }
-  /** Classify a Gmail request: run read-only actions, or show a confirmation for sending/removing. */
-  | { type: "mail_parse"; draftId: string }
+  | { type: "batch"; chatId: number; seq: number }
+  /** Build a card from a request and show it in place of `messageId` (a placeholder), or as a new message. */
+  | { type: "parse"; draft: Draft; messageId: number | null }
+  /** Apply a free-text correction to a card. */
+  | { type: "edit"; data: CardData; instruction: string; messageId: number | null }
+  /** Classify a reply about an existing event (reschedule/cancel/note) and ask for confirmation. */
+  | { type: "action"; eventId: string; text: string }
+  /** Classify a Gmail request: run read-only actions, or ask to confirm sending/removing. */
+  | { type: "mail"; text: string; targetId: string | null }
   /** Transcribe a voice message, then treat it as text. */
-  | { type: "voice"; userId: number; chatId: number; fileId: string; messageId: number; replyTo: number | null }
-  /** Incremental calendar sync after a Google push. */
-  | { type: "sync"; userId: number }
-  /** Full window sync (after OAuth, daily). `notify` tells the owner the result. */
-  | { type: "full_sync"; userId: number; notify?: boolean }
-  /** Daily maintenance: renew the push channel when `renew`, then the full sync (safety net for lost pushes). */
-  | { type: "daily"; userId: number; renew: boolean }
+  | { type: "voice"; chatId: number; fileId: string; messageId: number; replyTo: TgMessage | null }
+  /** Report calendar changes after a Google push. */
+  | { type: "sync" }
+  /** Right after Google is connected: push channel, remember upcoming events, Gmail watch, greet. */
+  | { type: "connected"; gmail: boolean }
+  /** Daily: renew the push channels, remember newly added events (safety net for lost pushes). */
+  | { type: "daily" }
   /** Report emails that arrived since the last Gmail push. */
-  | { type: "gmail_sync"; userId: number };
+  | { type: "gmail_sync" };
 
 export const JOB_ATTEMPTS = 3;
 
 export async function runJob(env: Env, job: Job): Promise<void> {
   switch (job.type) {
     case "batch":
-      return processBatch(env, job.draftId, job.seq);
+      return processBatch(env, job.chatId, job.seq);
     case "parse":
-      return parseDraft(env, job.draftId);
+      return parseDraft(env, job.draft, job.messageId);
     case "edit":
-      return editDraft(env, job.draftId, job.instruction);
-    case "action_parse":
-      return parseActionDraft(env, job.draftId);
-    case "mail_parse":
-      return parseMailDraft(env, job.draftId);
+      return editDraft(env, job.data, job.instruction, job.messageId);
+    case "action":
+      return parseAction(env, job.eventId, job.text);
+    case "mail":
+      return parseMail(env, job.text, job.targetId);
     case "voice": {
-      const user = await getUserById(env.db, job.userId);
-      if (!user) return;
       const tg = new Telegram(env);
       const { bytes } = await tg.download(job.fileId);
       const text = await transcribe(env, bytes);
@@ -61,55 +61,50 @@ export async function runJob(env: Env, job: Job): Promise<void> {
         return;
       }
       await tg.send(job.chatId, `🎙 <i>${esc(text)}</i>`, { replyTo: job.messageId });
-      return handleOwnerText(env, user, job.chatId, text, "voice", job.replyTo);
+      return handleOwnerText(env, await loadOwner(env), job.chatId, text, "voice", job.replyTo);
     }
     case "sync":
-      await incrementalSync(env, job.userId);
+      if (await hasGoogleAuth(env)) await syncRecent(env);
       return;
-    case "full_sync": {
-      const count = await fullSync(env, job.userId);
-      if (job.notify) {
-        const user = await getUserById(env.db, job.userId);
-        if (user) {
-          await new Telegram(env).send(user.tg_id, `✅ Календар підключено. Бачу подій на найближчі 30 днів: ${count}.\n\n${helpText()}`);
-        }
+    case "connected": {
+      await startWatch(env);
+      const count = await markUpcoming(env);
+      // New-mail notifications are optional: a Pub/Sub problem must not fail the connection.
+      if (job.gmail && gmailPushConfigured(env)) {
+        await startGmailWatch(env, true).catch((err) => logError(env, "gmail.watch", err));
       }
+      await new Telegram(env).send(env.OWNER_TELEGRAM_ID, `✅ Google підключено. Подій на найближчі 30 днів: ${count}.\n\n${helpText()}`);
       return;
     }
     case "daily":
-      if (job.renew) await startWatch(env, job.userId);
-      await fullSync(env, job.userId);
-      await pruneSelfWrites(env.db);
+      if (!(await hasGoogleAuth(env))) return;
+      await startWatch(env);
+      await markUpcoming(env);
       // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.
-      if (gmailPushConfigured(env) && (await hasGmailScope(env, job.userId))) {
-        await startGmailWatch(env, job.userId).catch((err) => logError(env, "gmail.watch", err, { userId: job.userId }));
+      if (gmailPushConfigured(env) && (await hasGmailScope(env))) {
+        await startGmailWatch(env).catch((err) => logError(env, "gmail.watch", err));
       }
       return;
     case "gmail_sync":
-      await gmailSync(env, job.userId);
+      if (await hasGmailScope(env)) await gmailSync(env);
       return;
   }
 }
 
-async function handleRevoked(env: Env, userId: number): Promise<void> {
-  await forgetGoogleAuth(env, userId);
-  const user = await getUserById(env.db, userId);
-  if (user) {
-    await new Telegram(env).send(user.tg_id, "⚠️ Доступ до Google Calendar втрачено. Підключіть календар знову.", {
-      keyboard: [[{ text: "🔗 Підключити Google Calendar", url: await connectLink(env, userId) }]],
-    });
-  }
+async function handleRevoked(env: Env): Promise<void> {
+  await forgetGoogleAuth(env);
+  await new Telegram(env).send(env.OWNER_TELEGRAM_ID, "⚠️ Доступ до Google втрачено. Підключіть його знову.", {
+    keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env) }]],
+  });
 }
 
 /** Tells the owner a job finally failed so the request is not lost silently. */
 async function reportJobFailure(env: Env, job: Job): Promise<void> {
   const tg = new Telegram(env);
-  if (job.type === "batch" || job.type === "parse" || job.type === "edit" || job.type === "action_parse" || job.type === "mail_parse") {
-    const draft = await getDraft(env.db, job.draftId);
-    if (!draft) return;
-    await transition(env.db, draft.id, ["parsing", "collecting"], "failed");
-    const user = await getUserById(env.db, draft.user_id);
-    if (user) await tg.send(user.tg_id, "😔 Не вдалося підготувати картку. Спробуйте ще раз.").catch(() => undefined);
+  if (job.type === "batch" || job.type === "parse" || job.type === "edit") {
+    await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося підготувати картку. Спробуйте ще раз.").catch(() => undefined);
+  } else if (job.type === "action" || job.type === "mail") {
+    await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося обробити запит. Спробуйте ще раз.").catch(() => undefined);
   } else if (job.type === "voice") {
     await tg.send(job.chatId, "😔 Не вдалося обробити голосове. Спробуйте ще раз.", { replyTo: job.messageId }).catch(() => undefined);
   }
@@ -131,14 +126,14 @@ export async function runWithRetry(
       return;
     } catch (err) {
       if (err instanceof GoogleAuthRevokedError) {
-        await handleRevoked(env, err.userId).catch((e) => logError(env, "job.revoked", e));
+        await handleRevoked(env).catch((e) => logError(env, "job.revoked", e));
         return;
       }
       if (attempt < attempts) {
         await sleep(2000 * attempt);
         continue;
       }
-      await logError(env, `job.${job.type}`, err, { userId: "userId" in job ? job.userId : null, payload: job });
+      await logError(env, `job.${job.type}`, err);
       await reportJobFailure(env, job).catch(() => undefined);
       return;
     }

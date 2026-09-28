@@ -1,6 +1,6 @@
 import type { Card, DirectoryEntry } from "../bot/card";
-import type { User } from "../db/users";
-import { durationOf, formatOf } from "../db/users";
+import type { User } from "../bot/owner";
+import { durationOf, formatOf } from "../bot/owner";
 import { describeNow } from "../lib/time";
 
 const CARD_SCHEMA = `{
@@ -24,7 +24,7 @@ const CARD_SCHEMA = `{
 function ownerBlock(owner: User): string {
   return [
     `Власник календаря (організатор): ${owner.full_name ?? "невідомо"}${owner.position ? `, ${owner.position}` : ""}${owner.email ? `, ${owner.email}` : ""}.`,
-    `Дефолтна тривалість: ${durationOf(owner)} хв. Дефолтний формат: ${formatOf(owner) === "google_meet" ? "google_meet" : "offline"}.`,
+    `Дефолтна тривалість: ${durationOf(owner)} хв. Дефолтний формат: ${formatOf(owner)}.`,
     owner.defaults.address ? `Дефолтна адреса: ${owner.defaults.address}.` : "",
   ]
     .filter(Boolean)

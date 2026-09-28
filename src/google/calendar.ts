@@ -21,6 +21,9 @@ export interface GEvent {
   htmlLink?: string;
   hangoutLink?: string;
   created?: string;
+  updated?: string;
+  recurringEventId?: string;
+  extendedProperties?: { private?: Record<string, string>; shared?: Record<string, string> };
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
   attendees?: GAttendee[];
@@ -43,13 +46,10 @@ export interface GChannel {
 
 /** Google Calendar API client for one owner's primary calendar. */
 export class Calendar {
-  constructor(
-    private readonly env: Env,
-    private readonly userId: number,
-  ) {}
+  constructor(private readonly env: Env) {}
 
   private async request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
-    const token = await getAccessToken(this.env, this.userId, retried);
+    const token = await getAccessToken(this.env, retried);
     const res = await fetchWithRetry(`${BASE}${path}`, {
       ...init,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init.headers },
@@ -79,6 +79,17 @@ export class Calendar {
     return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    });
+  }
+
+  /**
+   * Sets private properties on the owner's copy of the event, silently (no emails to guests). The bot uses them as
+   * its memory of what it already reported about the event — see google/sync.ts.
+   */
+  setPrivate(eventId: string, props: Record<string, string>): Promise<GEvent> {
+    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+      method: "PATCH",
+      body: JSON.stringify({ extendedProperties: { private: props } }),
     });
   }
 

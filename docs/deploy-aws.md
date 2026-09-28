@@ -1,7 +1,7 @@
 # Розгортання на AWS
 
 AI-secretary працює однаково на **Vercel** і на **AWS**: той самий код, ті самі адреси (`/api/telegram`,
-`/api/setup`…), та сама база. Цей документ — для людини; покрокова інструкція для агента Claude Code —
+`/api/setup`…). Бази даних немає ні там, ні там. Цей документ — для людини; покрокова інструкція для агента Claude Code —
 `.claude/skills/deploy-aws/SKILL.md` (достатньо сказати агенту «розгорни бота на AWS»).
 
 ## Як це влаштовано
@@ -12,18 +12,17 @@ Google   ─ push ────┤                          ┌─▶ Google Cale
 Браузер  ─ OAuth ───┼─▶ Lambda Function URL ───┼─▶ OpenRouter (LLM)
 Pub/Sub  ─ Gmail ───┤   (ApiFunction)          └─▶ Zoom (необовʼязково)
 Ви ─ /api/setup ────┘         │
-EventBridge (щодня) ─▶ CronFunction      Neon Postgres (поза AWS, по HTTPS)
+EventBridge (щодня) ─▶ CronFunction
 ```
 
 | Компонент AWS | Навіщо | Скільки коштує для однієї людини |
 |---|---|---|
 | **Lambda + Function URL** (`ApiFunction`) | усі HTTP-запити. Режим *response streaming*: відповідь іде одразу, а LLM і синхронізація доробляються після неї | Free Tier: 1 млн запитів і 400 000 GB-с на місяць — з великим запасом |
 | **Lambda + EventBridge Scheduler** (`CronFunction`) | раз на добу продовжує push-підписки Google і звіряє календар | безкоштовно в межах Free Tier |
-| **Neon Postgres** | стан бота (токени, картки, дзеркало календаря) | безкоштовний план 0.5 GB |
 
-Чому база не в AWS: RDS/Aurora вимагають VPC, а Lambda у VPC для виходу в інтернет (Telegram, Google) потребує
-NAT Gateway (~30 $/міс). Neon працює по HTTPS, тож Lambda обходиться без VPC і без витрат. Будь-який інший
-Postgres із публічним доступом теж підійде — вкажіть його рядок підключення.
+**Бази даних немає.** Доступ до Google зберігається зашифрованим в одному закріпленому повідомленні вашого чату з
+ботом, картки зустрічей несуть свої дані всередині повідомлень Telegram, календар бот щоразу читає прямо з Google.
+Тож ні RDS, ні VPC, ні Neon не потрібні.
 
 ## Що потрібно
 
@@ -32,7 +31,6 @@ Postgres із публічним доступом теж підійде — вк
   (Homebrew, MSI для Windows або zip-інсталятор для Linux) і Node.js 22.
 - Чотири речі з [docs/what-you-need.md](what-you-need.md): токен бота, ваш числовий Telegram ID, ключ OpenRouter,
   Google Client ID і Client Secret.
-- Рядок підключення Postgres — безкоштовна база на [neon.tech](https://neon.tech) → Create project → Connect.
 
 ## Розгортання
 
@@ -48,22 +46,22 @@ sam deploy
 
 1. Візьміть `FunctionUrl` з виводу (`aws cloudformation describe-stacks --stack-name ai-secretary`).
 2. Відкрийте цю адресу — відкриється сторінка налаштування: вона сама підключить Telegram-бота й покаже,
-   що лишилось (Google, голосові, Zoom, сповіщення про пошту).
+   що лишилось (Google, Zoom, сповіщення про пошту).
 3. Візьміть `GoogleRedirectUri` з виводу й додайте його в Google-клієнт: Clients → Authorized redirect URIs → Save.
 4. Напишіть боту `/start`.
 
-Оновлення: `git pull && npm ci && npm run build:aws && cd aws && sam deploy`. Схема бази оновлюється сама.
+Оновлення: `git pull && npm ci && npm run build:aws && cd aws && sam deploy`.
 
 ## Параметри
 
-Обовʼязкові: `OwnerTelegramId`, `TelegramBotToken`, `OpenRouterApiKey`, `GoogleClientId`, `GoogleClientSecret`,
-`DatabaseUrl`.
-Необовʼязкові: `ZoomAccountId`, `ZoomClientId`,
-`ZoomClientSecret`, `GmailPubsubTopic`, `LlmModel`, `PublicUrl` (свій домен), `EncryptionKey`, `CronSecret`.
+Обовʼязкові: `OwnerTelegramId`, `TelegramBotToken`, `OpenRouterApiKey`, `GoogleClientId`, `GoogleClientSecret`.
+Необовʼязкові: `ZoomAccountId`, `ZoomClientId`, `ZoomClientSecret`, `GmailPubsubTopic`, `LlmModel`,
+`OwnerName`, `OwnerPosition`, `OwnerPhone`, `DefaultDurationMin`, `DefaultFormat`, `DefaultAddress`,
+`PublicUrl` (свій домен), `EncryptionKey`, `CronSecret`.
 Значення за замовчуванням і пояснення — у `aws/template.yaml`.
 
-`PUBLIC_URL` на AWS задавати не треба: бот бере адресу Function URL з першого запиту й запамʼятовує її,
-щоб щоденний cron (у якого запиту немає) теж її знав.
+`PUBLIC_URL` на AWS задавати не треба: бот бере адресу Function URL із запиту, а щоденному cron (у якого запиту
+немає) стек передає її сам.
 
 ## Безпека
 

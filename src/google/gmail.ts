@@ -162,13 +162,10 @@ export function nameOf(from: string): string {
 
 /** Gmail API client for the owner's mailbox. */
 export class Gmail {
-  constructor(
-    private readonly env: Env,
-    private readonly userId: number,
-  ) {}
+  constructor(private readonly env: Env) {}
 
   private async request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
-    const token = await getAccessToken(this.env, this.userId, retried);
+    const token = await getAccessToken(this.env, retried);
     const res = await fetchWithRetry(`${BASE}${path}`, {
       ...init,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init.headers },
@@ -222,17 +219,21 @@ export class Gmail {
     return (await this.request<{ labels?: GLabel[] }>("/labels")).labels ?? [];
   }
 
-  async createLabel(name: string): Promise<GLabel> {
+  async createLabel(name: string, hidden = false): Promise<GLabel> {
     return this.request<GLabel>("/labels", {
       method: "POST",
-      body: JSON.stringify({ name, labelListVisibility: "labelShow", messageListVisibility: "show" }),
+      body: JSON.stringify(
+        hidden
+          ? { name, labelListVisibility: "labelHide", messageListVisibility: "hide" }
+          : { name, labelListVisibility: "labelShow", messageListVisibility: "show" },
+      ),
     });
   }
 
   /** Finds a user label by name (case-insensitive) or creates it. */
-  async ensureLabel(name: string): Promise<GLabel> {
+  async ensureLabel(name: string, hidden = false): Promise<GLabel> {
     const existing = (await this.labels()).find((l) => l.name.toLowerCase() === name.toLowerCase());
-    return existing ?? this.createLabel(name);
+    return existing ?? this.createLabel(name, hidden);
   }
 
   /** Push notifications about mailbox changes to a Cloud Pub/Sub topic (expires after ~7 days). */
@@ -245,30 +246,5 @@ export class Gmail {
 
   async stop(): Promise<void> {
     await this.request("/stop", { method: "POST" });
-  }
-
-  /** Ids of messages added to the INBOX since `startHistoryId`, plus the new history id. */
-  async newInboxMessages(startHistoryId: string): Promise<{ ids: string[]; historyId: string }> {
-    const ids: string[] = [];
-    let pageToken: string | undefined;
-    let historyId = startHistoryId;
-    do {
-      const params = new URLSearchParams({ startHistoryId, historyTypes: "messageAdded", labelId: "INBOX" });
-      if (pageToken) params.set("pageToken", pageToken);
-      const res = await this.request<{
-        history?: { messagesAdded?: { message: { id: string; labelIds?: string[] } }[] }[];
-        historyId: string;
-        nextPageToken?: string;
-      }>(`/history?${params}`);
-      for (const h of res.history ?? []) {
-        for (const added of h.messagesAdded ?? []) {
-          const labels = added.message.labelIds ?? [];
-          if (labels.includes("INBOX") && !labels.includes("SENT") && !ids.includes(added.message.id)) ids.push(added.message.id);
-        }
-      }
-      historyId = res.historyId;
-      pageToken = res.nextPageToken;
-    } while (pageToken);
-    return { ids, historyId };
   }
 }

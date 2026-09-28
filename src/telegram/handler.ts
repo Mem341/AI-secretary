@@ -1,19 +1,13 @@
 import { handleActionCallback } from "../bot/actions";
+import { loadDirectory } from "../bot/contacts";
 import { handleMailCallback, handleMailQuickAction, startMailDraft } from "../bot/mail";
 import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE_S, PHOTO_DEBOUNCE_S, photoLine } from "../bot/meetings";
-import {
-  handleDialogCallback,
-  handleDialogMessage,
-  helpText,
-  showSettings,
-  startOnboarding,
-} from "../bot/onboarding";
-import { all } from "../db/client";
-import { cancelInputDrafts } from "../db/drafts";
-import { deleteContact, ensureUser, listContacts, saveContact, updateUser, type User } from "../db/users";
+import { helpText, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
+import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { hasGoogleAuth } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
+import { clearAnswer } from "../session";
 import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
 import type { TgCallbackQuery, TgMessage, TgMessageOrigin, TgUpdate, TgUser } from "./types";
 
@@ -23,7 +17,7 @@ import type { TgCallbackQuery, TgMessage, TgMessageOrigin, TgUpdate, TgUser } fr
  */
 async function authorize(env: Env, from: TgUser): Promise<User | null> {
   if (from.is_bot || !isOwner(env, from.id)) return null;
-  return ensureUser(env.db, from.id, from.username ?? null);
+  return loadOwner(env, from);
 }
 
 export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
@@ -39,11 +33,6 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
 
   const text = msg.text?.trim() ?? "";
   if (text.startsWith("/")) return handleCommand(env, user, msg, text);
-  if (await handleDialogMessage(env, user, msg)) return;
-  if (!user.full_name) {
-    await startOnboarding(env, user);
-    return;
-  }
   await handleOwnerMessage(env, user, msg);
 }
 
@@ -101,11 +90,10 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
     await tg.typing(msg.chat.id);
     await env.jobs.send({
       type: "voice",
-      userId: user.id,
       chatId: msg.chat.id,
       fileId: msg.voice.file_id,
       messageId: msg.message_id,
-      replyTo: msg.reply_to_message?.message_id ?? null,
+      replyTo: msg.reply_to_message ?? null,
     });
     return;
   }
@@ -116,21 +104,15 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
   }
 
   const text = msg.text?.trim();
-  if (text) await handleOwnerText(env, user, msg.chat.id, text, "text", msg.reply_to_message?.message_id ?? null);
+  if (text) await handleOwnerText(env, user, msg.chat.id, text, "text", msg.reply_to_message ?? null);
 }
-
-const EMAIL_RE = /^[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+$/;
 
 async function handleCommand(env: Env, user: User, msg: TgMessage, text: string): Promise<void> {
   const tg = new Telegram(env);
   const [rawCmd, ...args] = text.split(/\s+/);
   const cmd = rawCmd!.split("@")[0]!.toLowerCase();
-
-  // Any command interrupts a dialog step.
-  if (user.dialog_state && cmd !== "/start") {
-    await updateUser(env.db, user.id, { dialog_state: null });
-    user.dialog_state = null;
-  }
+  // Any command ends whatever the bot was waiting an answer to.
+  clearAnswer(msg.chat.id);
 
   switch (cmd) {
     case "/start":
@@ -140,12 +122,11 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
       await showSettings(env, user);
       return;
     case "/cancel":
-      await cancelInputDrafts(env.db, user.id);
       await tg.send(user.tg_id, "Гаразд, скасовано.", { removeKeyboard: true });
       return;
     case "/new":
-      if (!user.full_name || !(await hasGoogleAuth(env, user.id))) {
-        await startOnboarding(env, user);
+      if (!(await hasGoogleAuth(env))) {
+        await sendConnectGoogle(env);
         return;
       }
       await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.");
@@ -159,44 +140,17 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
         );
         return;
       }
-      await startMailDraft(env, user, msg.chat.id, request);
+      await startMailDraft(env, msg.chat.id, request);
       return;
     }
     case "/contacts": {
-      const contacts = await listContacts(env.db, 100);
+      const contacts = (await loadDirectory(env)).slice(0, 100);
       await tg.send(
         user.tg_id,
         contacts.length
-          ? `📇 <b>Адресна книга</b>\n${contacts.map((c) => `• ${esc(c.name)} — ${esc(c.email)}`).join("\n")}`
-          : "Адресна книга порожня. Вона поповнюється учасниками створених зустрічей або командою\n<code>/contact Імʼя Прізвище email</code>",
+          ? `📇 <b>Кого я знаю з вашого календаря</b>\n${contacts.map((c) => `• ${esc(c.name)} — ${esc(c.email)}`).join("\n")}`
+          : "Поки нікого: я беру імена й email учасників ваших подій у Google Calendar. Email нової людини просто напишіть у запиті.",
       );
-      return;
-    }
-    case "/contact": {
-      const email = args.at(-1) ?? "";
-      const name = args.slice(0, -1).join(" ").trim();
-      if (!EMAIL_RE.test(email) || !name) {
-        await tg.send(user.tg_id, "Формат: <code>/contact Імʼя Прізвище email</code>\nВидалити: <code>/contact_del email</code>");
-        return;
-      }
-      await saveContact(env.db, name, email);
-      await tg.send(user.tg_id, `✅ Збережено: ${esc(name)} — ${esc(email.toLowerCase())}`);
-      return;
-    }
-    case "/contact_del": {
-      const ok = !!args[0] && (await deleteContact(env.db, args[0]));
-      await tg.send(user.tg_id, ok ? "🗑 Видалено." : "Такого email в адресній книзі немає.");
-      return;
-    }
-    case "/errors": {
-      const rows = await all<{ ts: number; scope: string; message: string }>(
-        env.db,
-        "SELECT ts, scope, message FROM errors ORDER BY ts DESC LIMIT 10",
-      );
-      const lines = rows.map(
-        (e) => `<code>${toKyivDate(new Date(e.ts))} ${formatTime(new Date(e.ts))}</code> ${esc(e.scope)}: ${esc(e.message.slice(0, 200))}`,
-      );
-      await tg.send(user.tg_id, lines.length ? lines.join("\n\n") : "Помилок немає 🎉");
       return;
     }
   }
@@ -210,11 +164,10 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   const [kind, a = "", b = ""] = (cq.data ?? "").split(":");
   let toast: string | undefined;
   try {
-    if (kind === "d") toast = await handleCardCallback(env, user, a, b);
-    else if (kind === "a") toast = await handleActionCallback(env, user, a, b);
-    else if (kind === "m") toast = await handleMailCallback(env, user, a, b);
-    else if (kind === "g") toast = await handleMailQuickAction(env, user, a, b);
-    else if (kind === "o") toast = await handleDialogCallback(env, user, a, b);
+    if (kind === "d") toast = await handleCardCallback(env, user, cq.message, a);
+    else if (kind === "a") toast = await handleActionCallback(env, cq.message, a);
+    else if (kind === "m") toast = await handleMailCallback(env, cq.message, a);
+    else if (kind === "g") toast = await handleMailQuickAction(env, a, b);
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);
   }

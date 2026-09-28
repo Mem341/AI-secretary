@@ -1,41 +1,34 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { gmailPush } from "../src/app";
 import { looksLikeMailRequest } from "../src/bot/mail";
-import type { Db } from "../src/db/client";
 import { buildRawMessage, extractBody, replySubject } from "../src/google/gmail";
-import { encrypt, fromBase64Url, toBase64Url } from "../src/lib/crypto";
+import { gmailPushToken, gmailSync, SEEN_LABEL } from "../src/google/gmailPush";
+import { fromBase64Url, toBase64Url } from "../src/lib/crypto";
 import { handleUpdate } from "../src/telegram/handler";
-import type { TgUpdate } from "../src/telegram/types";
-import { type Call, llmReply, mockFetch, OWNER, pgliteDb, resetDb, runJobs, testConfig, testEnv, tgCalls } from "./helpers";
+import { hiddenData, readHidden } from "../src/telegram/hidden";
+import type { TgMessage, TgUpdate } from "../src/telegram/types";
+import {
+  calendarList,
+  connectGoogle,
+  lastBotMessage,
+  llmReply,
+  mockFetch,
+  OWNER,
+  resetInstance,
+  runJobs,
+  testEnv,
+  tg,
+  tgCalls,
+} from "./helpers";
 
-let db: Db;
 let updateId = 1;
 let msgId = 10;
 
-beforeAll(async () => {
-  db = await pgliteDb();
-});
-beforeEach(async () => {
-  await resetDb(db);
-});
+beforeEach(() => resetInstance());
 afterEach(() => vi.restoreAllMocks());
 
 const b64 = (s: string) => toBase64Url(new TextEncoder().encode(s));
 const decodeRaw = (raw: string) => new TextDecoder().decode(fromBase64Url(raw));
-
-async function seedOwner(scope = "openid email calendar.events https://www.googleapis.com/auth/gmail.modify"): Promise<number> {
-  const now = Date.now();
-  const { rows } = await db.query<{ id: number }>(
-    `INSERT INTO users (tg_id, full_name, position, email, created_at, updated_at)
-     VALUES ($1, 'Олександр Коваленко', 'CEO', 'boss@acme.ua', $2, $2) RETURNING id`,
-    [OWNER, now],
-  );
-  await db.query(
-    "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, granted_scope, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
-    [rows[0]!.id, await encrypt(testConfig.ENCRYPTION_KEY, "r"), await encrypt(testConfig.ENCRYPTION_KEY, "a"), now + 3600_000, scope, now],
-  );
-  await db.query("INSERT INTO contacts (name, email, updated_at) VALUES ('Іван Петренко', 'ivan@example.com', $1)", [now]);
-  return rows[0]!.id;
-}
 
 function gmailMessage(id: string, over: { from?: string; subject?: string; body?: string; unread?: boolean } = {}) {
   return {
@@ -92,18 +85,17 @@ function text(t: string, extra: Record<string, unknown> = {}): TgUpdate {
   };
 }
 
-function replyTo(messageId: number, t: string): TgUpdate {
-  return text(t, { reply_to_message: { message_id: messageId, date: 0, chat: { id: OWNER, type: "private" } } });
+const replyTo = (message: TgMessage, t: string) => text(t, { reply_to_message: message });
+
+function press(data: string, message?: TgMessage): TgUpdate {
+  return { update_id: updateId++, callback_query: { id: `cb${updateId}`, from: { id: OWNER, is_bot: false, first_name: "O" }, data, message } };
 }
 
-function press(data: string): TgUpdate {
-  return { update_id: updateId++, callback_query: { id: `cb${updateId}`, from: { id: OWNER, is_bot: false, first_name: "O" }, data } };
-}
+/** An email card as the bot sends it (the Gmail id hidden inside). */
+const mailCard = (id: string) => tg.message(hiddenData({ k: "mail", id }) + "📧 <b>Іван Петренко</b>");
 
-const lastButtons = (calls: Call[]) => {
-  const last = [...tgCalls(calls, "sendMessage"), ...tgCalls(calls, "editMessageText")].filter((m) => m.reply_markup).at(-1)!;
-  return (last.reply_markup as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat();
-};
+/** The calendar knows Ivan from a past meeting — that is the address book. */
+const knownPeople = calendarList([{ id: "old", attendees: [{ email: "ivan@example.com", displayName: "Іван Петренко" }] }]);
 
 describe("mail routing", () => {
   it("recognizes mail requests by whole words only", () => {
@@ -140,66 +132,64 @@ describe("Gmail helpers", () => {
 });
 
 describe("Gmail agent", () => {
-  it("'перевір пошту' shows unread emails, one message per email, each with quick buttons", async () => {
-    await seedOwner();
+  it("'перевір пошту' shows unread emails, one message per email with its id hidden, each with quick buttons", async () => {
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
     const calls = mockFetch([
+      knownPeople,
       (url) => (url.hostname === "openrouter.ai" ? llmReply({ action: "search", query: "is:unread in:inbox" }) : undefined),
       gmailRoutes(writes, { m1: gmailMessage("m1"), m2: gmailMessage("m2", { from: "Олег <oleh@x.ua>", subject: "Звіт" }) }),
     ]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
     await handleUpdate(env, text("перевір пошту"));
-    expect(jobs.map((j) => j.body.type)).toEqual(["mail_parse"]);
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "mail", text: "перевір пошту", targetId: null }]);
     await runJobs(env, jobs);
 
     const search = calls.find((c) => c.url.includes("/gmail/v1/users/me/messages?"))!;
     expect(new URL(search.url).searchParams.get("q")).toBe("is:unread in:inbox");
-    const cards = tgCalls(calls, "sendMessage").filter((m) => String(m.text).startsWith("📧"));
-    expect(cards.map((c) => String(c.text).split("\n")[1])).toEqual(["<b>Бюджет Буковелю</b>", "<b>Звіт</b>"]);
-    expect(lastButtons(calls).map((b) => b.text)).toEqual(["📖 Прочитати", "✅ Прочитано", "🗄 В архів"]);
-    const { rows } = await db.query("SELECT ref_type, ref_id FROM message_links ORDER BY ref_id");
-    expect(rows).toEqual([
-      { ref_type: "mail", ref_id: "m1" },
-      { ref_type: "mail", ref_id: "m2" },
+    const cards = [...tg.messages.values()].filter((m) => m.text?.includes("📧"));
+    expect(cards.map((c) => readHidden(c))).toEqual([
+      { k: "mail", id: "m1" },
+      { k: "mail", id: "m2" },
     ]);
+    const buttons = (tgCalls(calls, "sendMessage").at(-1)!.reply_markup as { inline_keyboard: { text: string }[][] }).inline_keyboard.flat();
+    expect(buttons.map((b) => b.text)).toEqual(["📖 Прочитати", "✅ Прочитано", "🗄 В архів"]);
     expect(writes).toEqual([]);
   });
 
   it("replying to an email drafts a threaded answer and sends it only after confirmation", async () => {
-    await seedOwner();
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
     const calls = mockFetch([
+      knownPeople,
       (url) => (url.hostname === "openrouter.ai" ? llmReply({ action: "reply", body: "Добре, буду в четвер." }) : undefined),
       gmailRoutes(writes, { m1: gmailMessage("m1") }),
     ]);
-    const { env, jobs } = testEnv(db);
-    const { linkMessage } = await import("../src/db/messageLinks");
-    await linkMessage(db, 900, "mail", "m1");
-
-    await handleUpdate(env, replyTo(900, "відповідай що буду в четвер"));
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, replyTo(mailCard("m1"), "відповідай що буду в четвер"));
     await runJobs(env, jobs);
     const llm = calls.find((c) => c.url.includes("openrouter.ai"))!.body as { messages: { content: string }[] };
     expect(llm.messages[0]!.content).toContain("Тема: Бюджет Буковелю");
-    const card = String(tgCalls(calls, "sendMessage").at(-1)!.text);
-    expect(card).toContain("Відповісти Іван Петренко?");
-    expect(card).toContain("Re: Бюджет Буковелю");
+    const confirm = lastBotMessage("Відповісти Іван Петренко?");
+    expect(confirm.text).toContain("Re: Бюджет Буковелю");
     expect(writes).toEqual([]);
 
-    await handleUpdate(env, press(lastButtons(calls).find((b) => b.text === "✅ Надіслати")!.callback_data));
+    await handleUpdate(env, press("m:y", confirm));
     expect(writes).toHaveLength(1);
     expect(writes[0]!.path).toBe("/messages/send");
     expect(writes[0]!.body.threadId).toBe("t-m1");
     const raw = decodeRaw(writes[0]!.body.raw);
     expect(raw).toContain("To: ivan@example.com");
     expect(raw).toContain("In-Reply-To: <m1@mail.example.com>");
-    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("Відповідь надіслано");
+    expect(tg.messages.get(confirm.message_id)!.text).toContain("Відповідь надіслано");
   });
 
-  it("sends a new email to a contact from the address book; a name without email gets a question", async () => {
-    await seedOwner();
+  it("finds a known person's email in the calendar; a name without email gets a question", async () => {
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
     let n = 0;
-    const calls = mockFetch([
+    mockFetch([
+      knownPeople,
       (url) =>
         url.hostname === "openrouter.ai"
           ? llmReply(
@@ -210,29 +200,29 @@ describe("Gmail agent", () => {
           : undefined,
       gmailRoutes(writes, {}),
     ]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
 
     await handleUpdate(env, text("напиши Марії лист, щоб надіслала звіт"));
     await runJobs(env, jobs);
-    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Вкажіть email для: Марія");
-    expect(lastButtons(calls).map((b) => b.text)).toEqual(["✖️ Скасувати"]);
-    await handleUpdate(env, press(lastButtons(calls)[0]!.callback_data));
+    expect(lastBotMessage("Вкажіть email для: Марія")).toBeTruthy();
 
+    await handleUpdate(env, text("/cancel"));
     await handleUpdate(env, text("напиши Івану лист, що зустріч переносимо на пʼятницю"));
     await runJobs(env, jobs);
-    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Іван &lt;ivan@example.com&gt;");
-    await handleUpdate(env, press(lastButtons(calls).find((b) => b.text === "✅ Надіслати")!.callback_data));
+    const confirm = lastBotMessage("Іван &lt;ivan@example.com&gt;");
+    await handleUpdate(env, press("m:y", confirm));
     expect(writes.map((w) => w.path)).toEqual(["/messages/send"]);
     expect(decodeRaw(writes[0]!.body.raw)).toContain("To: ivan@example.com");
   });
 
   it("quick buttons mark as read and archive; reading shows the full text", async () => {
-    await seedOwner();
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
     const calls = mockFetch([gmailRoutes(writes, { m1: gmailMessage("m1", { body: "Повний текст листа" }) })]);
-    const { env } = testEnv(db);
+    const { env } = testEnv();
     await handleUpdate(env, press("g:m1:r"));
     expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Повний текст листа");
+    expect(readHidden(lastBotMessage("Повний текст листа"))).toEqual({ k: "mail", id: "m1" });
     await handleUpdate(env, press("g:m1:a"));
     expect(writes.map((w) => [w.path, w.body])).toEqual([
       ["/messages/m1/modify", { addLabelIds: [], removeLabelIds: ["UNREAD"] }],
@@ -241,60 +231,50 @@ describe("Gmail agent", () => {
   });
 
   it("trash and labels wait for confirmation; trash is recoverable", async () => {
-    await seedOwner();
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
     let n = 0;
-    const calls = mockFetch([
+    mockFetch([
+      knownPeople,
       (url) => (url.hostname === "openrouter.ai" ? llmReply(n++ === 0 ? { action: "label", label: "Бюджет" } : { action: "trash" }) : undefined),
       gmailRoutes(writes, { m1: gmailMessage("m1") }),
     ]);
-    const { env, jobs } = testEnv(db);
-    const { linkMessage } = await import("../src/db/messageLinks");
-    await linkMessage(db, 900, "mail", "m1");
+    const { env, jobs } = testEnv();
 
-    await handleUpdate(env, replyTo(900, "додай мітку Бюджет"));
+    await handleUpdate(env, replyTo(mailCard("m1"), "додай мітку Бюджет"));
     await runJobs(env, jobs);
-    await handleUpdate(env, press(lastButtons(calls).find((b) => b.text === "✅ Так")!.callback_data));
+    await handleUpdate(env, press("m:y", lastBotMessage("Додати мітку")));
     expect(writes.map((w) => w.path)).toEqual(["/labels", "/messages/m1/modify"]);
     expect(writes[1]!.body).toEqual({ addLabelIds: ["Label_1"], removeLabelIds: [] });
 
-    await handleUpdate(env, replyTo(900, "видали цей лист"));
+    await handleUpdate(env, replyTo(mailCard("m1"), "видали цей лист"));
     await runJobs(env, jobs);
-    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Перемістити в кошик");
-    await handleUpdate(env, press(lastButtons(calls).find((b) => b.text === "✅ Так")!.callback_data));
+    await handleUpdate(env, press("m:y", lastBotMessage("Перемістити в кошик")));
     expect(writes.at(-1)!.path).toBe("/messages/m1/trash");
   });
 
-  it("asks to reconnect Google when the grant predates Gmail access", async () => {
-    await seedOwner("openid email https://www.googleapis.com/auth/calendar.events");
+  it("asks to reconnect Google when the grant has no Gmail access", async () => {
+    await connectGoogle({ scope: "openid email https://www.googleapis.com/auth/calendar.events" });
     const calls = mockFetch([]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
     await handleUpdate(env, text("перевір пошту"));
     expect(jobs).toEqual([]);
     expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("дайте доступ до Gmail");
   });
 
   it("/mail routes explicitly, even without mail words", async () => {
-    await seedOwner();
+    await connectGoogle();
     mockFetch([]);
-    const { env, jobs } = testEnv(db);
+    const { env, jobs } = testEnv();
     await handleUpdate(env, text("/mail що нового?"));
-    expect(jobs.map((j) => j.body.type)).toEqual(["mail_parse"]);
+    expect(jobs.map((j) => j.body.type)).toEqual(["mail"]);
   });
 });
 
 describe("instant new-mail notifications (Gmail push)", () => {
-  async function seedWatched(historyId = "100"): Promise<number> {
-    const userId = await seedOwner();
-    await db.query("INSERT INTO gmail_state (user_id, history_id, expiration, updated_at) VALUES ($1, $2, 0, 0)", [userId, historyId]);
-    return userId;
-  }
-
   it("the push endpoint checks its token and queues a sync", async () => {
-    const userId = await seedWatched();
-    const { gmailPush } = await import("../src/app");
-    const { gmailPushToken } = await import("../src/google/gmailPush");
-    const { env, jobs } = testEnv(db);
+    mockFetch([]);
+    const { env, jobs } = testEnv();
     const post = (token: string) =>
       gmailPush(
         new Request(`https://bot.test/api/gmail-push?token=${token}`, {
@@ -306,73 +286,50 @@ describe("instant new-mail notifications (Gmail push)", () => {
     expect((await post("wrong")).status).toBe(403);
     expect(jobs).toEqual([]);
     expect((await post(gmailPushToken(env))).status).toBe(204);
-    expect(jobs.map((j) => j.body)).toEqual([{ type: "gmail_sync", userId }]);
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "gmail_sync" }]);
   });
 
-  it("reports each new INBOX email once, as its own linked message, and advances the history id", async () => {
-    const userId = await seedWatched("100");
+  it("reports each new INBOX email once and marks it with a hidden label instead of storing anything", async () => {
+    await connectGoogle();
     const writes: { method: string; path: string; body: any }[] = [];
-    const inbox = gmailRoutes(writes, { n1: gmailMessage("n1", { subject: "Нова пропозиція" }), n2: gmailMessage("n2") });
+    let query = "";
     const calls = mockFetch([
-      (url) =>
-        url.pathname.endsWith("/history")
-          ? Response.json({
-              historyId: "105",
-              history: [
-                { messagesAdded: [{ message: { id: "n1", labelIds: ["INBOX", "UNREAD"] } }] },
-                { messagesAdded: [{ message: { id: "s1", labelIds: ["SENT"] } }, { message: { id: "n2", labelIds: ["INBOX"] } }] },
-              ],
-            })
-          : undefined,
-      inbox,
+      (url) => {
+        if (url.pathname.endsWith("/messages") && url.searchParams.get("q")) query = url.searchParams.get("q")!;
+        return undefined;
+      },
+      gmailRoutes(writes, { n1: gmailMessage("n1", { subject: "Нова пропозиція" }), n2: gmailMessage("n2") }),
     ]);
-    const { gmailSync } = await import("../src/google/gmailPush");
-    const { env } = testEnv(db);
-    expect(await gmailSync(env, userId)).toBe(2);
+    const { env } = testEnv();
+    expect(await gmailSync(env)).toBe(2);
+    expect(query).toBe(`in:inbox -label:${SEEN_LABEL} -from:me newer_than:1d`);
     const notices = tgCalls(calls, "sendMessage").map((m) => String(m.text));
     expect(notices).toHaveLength(2);
     expect(notices[0]).toContain("📨 Новий лист");
     expect(notices[0]).toContain("Нова пропозиція");
-    const history = calls.find((c) => c.url.includes("/history"))!;
-    expect(new URL(history.url).searchParams.get("startHistoryId")).toBe("100");
-    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
-    expect(rows[0]!.history_id).toBe("105");
-    const { rows: links } = await db.query("SELECT ref_id FROM message_links ORDER BY ref_id");
-    expect(links).toEqual([{ ref_id: "n1" }, { ref_id: "n2" }]);
-  });
-
-  it("starts over when Gmail no longer has the stored history (404)", async () => {
-    const userId = await seedWatched("1");
-    mockFetch([
-      (url) => (url.pathname.endsWith("/history") ? new Response("gone", { status: 404 }) : undefined),
-      (url) => (url.pathname.endsWith("/watch") ? Response.json({ historyId: "900", expiration: String(Date.now() + 7 * 86400_000) }) : undefined),
-    ]);
-    const { gmailSync } = await import("../src/google/gmailPush");
-    const { env } = testEnv(db);
-    env.GMAIL_PUBSUB_TOPIC = "projects/p/topics/gmail";
-    expect(await gmailSync(env, userId)).toBe(0);
-    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
-    expect(rows[0]!.history_id).toBe("900");
+    // The hidden label is created once (hidden in Gmail) and put on each reported email.
+    const created = writes.find((w) => w.path === "/labels")!;
+    expect(created.body).toEqual({ name: SEEN_LABEL, labelListVisibility: "labelHide", messageListVisibility: "hide" });
+    expect(writes.filter((w) => w.path.endsWith("/modify")).map((w) => w.body.addLabelIds)).toEqual([["Label_1"], ["Label_1"]]);
   });
 
   it("the daily job renews the Gmail watch when push is configured", async () => {
-    const userId = await seedWatched("100");
+    await connectGoogle();
     let watched: any = null;
     mockFetch([
-      (url) => (url.pathname.endsWith("/calendars/primary/events") ? Response.json({ items: [], nextSyncToken: "t" }) : undefined),
+      (url, init) =>
+        url.pathname.endsWith("/events/watch") ? Response.json({ id: JSON.parse(init.bodyText).id, resourceId: "r" }) : undefined,
+      (url) => (url.pathname.endsWith("/channels/stop") ? new Response(null, { status: 204 }) : undefined),
+      calendarList([]),
       (url, init) => {
         if (!url.pathname.endsWith("/gmail/v1/users/me/watch")) return undefined;
         watched = JSON.parse(init.bodyText);
         return Response.json({ historyId: "200", expiration: String(Date.now() + 7 * 86400_000) });
       },
     ]);
-    const { env, jobs } = testEnv(db);
-    env.GMAIL_PUBSUB_TOPIC = "projects/p/topics/gmail";
-    jobs.push({ body: { type: "daily", userId, renew: false } });
+    const { env, jobs } = testEnv({ GMAIL_PUBSUB_TOPIC: "projects/p/topics/gmail" });
+    jobs.push({ body: { type: "daily" } });
     await runJobs(env, jobs);
     expect(watched).toEqual({ topicName: "projects/p/topics/gmail", labelIds: ["INBOX"], labelFilterBehavior: "include" });
-    // Renewing keeps the stored position, so emails between the two watches are not lost.
-    const { rows } = await db.query<{ history_id: string }>("SELECT history_id FROM gmail_state");
-    expect(rows[0]!.history_id).toBe("100");
   });
 });

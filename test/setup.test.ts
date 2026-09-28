@@ -1,19 +1,12 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { dailyCron, oauthStart, setupBootErrorPage, setupPage } from "../src/app";
-import type { Db } from "../src/db/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dailyCron, healthCheck, oauthStart, setupBootErrorPage, setupPage } from "../src/app";
 import { ConfigError, loadConfig } from "../src/env";
-import { connectLink } from "../src/google/oauth";
-import { runWithRetry } from "../src/jobs";
-import { handleUpdate } from "../src/telegram/handler";
-import { mockFetch, OWNER, pgliteDb, resetDb, testConfig, testEnv, tgCalls } from "./helpers";
+import { connectLink, getAccessToken, GoogleAuthRevokedError, hasGoogleAuth } from "../src/google/oauth";
+import { encrypt } from "../src/lib/crypto";
+import { hiddenData } from "../src/telegram/hidden";
+import { connectGoogle, mockFetch, OWNER, resetInstance, testConfig, testEnv, tg, tgCalls } from "./helpers";
 
-let db: Db;
-beforeAll(async () => {
-  db = await pgliteDb();
-});
-beforeEach(async () => {
-  await resetDb(db);
-});
+beforeEach(() => resetInstance());
 afterEach(() => vi.restoreAllMocks());
 
 describe("loadConfig", () => {
@@ -36,6 +29,16 @@ describe("loadConfig", () => {
     expect(c.GOOGLE_CLIENT_ID).toBe("");
     expect(c.STT_MODEL).toBe("google/gemini-2.5-flash");
     expect(c.CRON_SECRET).toBe("");
+    expect(c.DEFAULT_DURATION_MIN).toBe(60);
+    expect(c.DEFAULT_FORMAT).toBe("offline");
+  });
+
+  it("reads the optional profile and meeting defaults", () => {
+    const c = loadConfig({ ...minimal, OWNER_NAME: "Олена Іваненко", DEFAULT_DURATION_MIN: "30", DEFAULT_FORMAT: "google_meet", DEFAULT_ADDRESS: "Офіс" });
+    expect(c.OWNER_NAME).toBe("Олена Іваненко");
+    expect(c.DEFAULT_DURATION_MIN).toBe(30);
+    expect(c.DEFAULT_FORMAT).toBe("google_meet");
+    expect(loadConfig({ ...minimal, DEFAULT_DURATION_MIN: "abc", DEFAULT_FORMAT: "teams" }).DEFAULT_FORMAT).toBe("offline");
   });
 
   it("prefers explicit secrets and a custom PUBLIC_URL", () => {
@@ -57,15 +60,15 @@ describe("/api/setup", () => {
     let webhookUrl = "";
     const calls = mockFetch([
       (url) => (url.pathname.endsWith("/getMe") ? Response.json({ ok: true, result: { username: "my_secretary_bot" } }) : undefined),
-      (url) => (url.pathname.endsWith("/getWebhookInfo") ? Response.json({ ok: true, result: { url: webhookUrl } }) : undefined),
+      (url) =>
+        url.pathname.endsWith("/getWebhookInfo") ? Response.json({ ok: true, result: { url: webhookUrl, max_connections: webhookUrl ? 1 : 40 } }) : undefined,
       (url, init) => {
         if (!url.pathname.endsWith("/setWebhook")) return undefined;
         webhookUrl = JSON.parse(init.bodyText).url;
         return Response.json({ ok: true, result: true });
       },
     ]);
-    const { env } = testEnv(db);
-    env.GOOGLE_CLIENT_ID = "";
+    const { env } = testEnv({ GOOGLE_CLIENT_ID: "" });
 
     const html = await (await setupPage(new Request("https://bot.test/api/setup"), env)).text();
     expect(tgCalls(calls, "setWebhook")).toEqual([
@@ -74,12 +77,14 @@ describe("/api/setup", () => {
         secret_token: "tg-secret",
         allowed_updates: ["message", "callback_query"],
         drop_pending_updates: true,
+        max_connections: 1,
       },
     ]);
     expect(tgCalls(calls, "setMyCommands")).toHaveLength(1);
     expect(html).toContain("@my_secretary_bot");
     expect(html).toContain("https://bot.test/api/oauth/callback");
-    expect(html).toContain("Готово 3 з 5");
+    expect(html).toContain("Готово 2 з 4");
+    expect(html).not.toContain("База даних");
     expect(html).not.toContain("tg-secret");
     expect(html).not.toContain(String(OWNER));
 
@@ -88,89 +93,47 @@ describe("/api/setup", () => {
     expect(tgCalls(calls, "setWebhook")).toHaveLength(1);
   });
 
-  it("explains missing variables and the database when the deployment cannot start", async () => {
-    const html = await setupBootErrorPage({ TELEGRAM_BOT_TOKEN: "x" }, undefined, "boom").text();
+  it("explains missing variables when the deployment cannot start — and nothing about a database", async () => {
+    const html = await setupBootErrorPage({ TELEGRAM_BOT_TOKEN: "x" }, "boom").text();
     expect(html).toContain("OWNER_TELEGRAM_ID");
     expect(html).toContain("OPENROUTER_API_KEY");
     expect(html).toContain("@userinfobot");
-    expect(html).toContain("Neon");
+    expect(html).not.toContain("DATABASE_URL");
+  });
 
-    const dbOnly = await setupBootErrorPage(
-      { OWNER_TELEGRAM_ID: "1", TELEGRAM_BOT_TOKEN: "x", OPENROUTER_API_KEY: "y" },
-      undefined,
-      "Missing environment variables: DATABASE_URL",
-    ).text();
-    expect(dbOnly).toContain("Готово 1 з 2");
+  it("health reports the webhook and the Google connection, with no database to check", async () => {
+    await connectGoogle();
+    mockFetch([(url) => (url.pathname.endsWith("/getWebhookInfo") ? Response.json({ ok: true, result: { url: "https://bot.test/api/telegram" } }) : undefined)]);
+    const { env } = testEnv();
+    const body = (await (await healthCheck(new Request("https://bot.test/api/health"), env)).json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: true, telegram_webhook: true, owner_started: true, google_connected: true, gmail_connected: true });
+    expect(body).not.toHaveProperty("database");
   });
 });
 
 describe("optional features", () => {
   it("without a Google OAuth client, calendar buttons lead to the setup page", async () => {
-    const { env } = testEnv(db);
-    env.GOOGLE_CLIENT_ID = "";
-    expect(await connectLink(env, 1)).toBe("https://bot.test/api/setup");
+    const { env } = testEnv({ GOOGLE_CLIENT_ID: "" });
+    expect(await connectLink(env)).toBe("https://bot.test/api/setup");
     const res = await oauthStart(new Request("https://bot.test/api/oauth/start?state=x"), env);
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://bot.test/api/setup");
   });
 
-  it("voice needs no extra key: OpenRouter transcribes the OGG note", async () => {
-    await db.query(
-      "INSERT INTO users (tg_id, full_name, position, created_at, updated_at) VALUES ($1, 'Олександр Коваленко', 'CEO', 0, 0)",
-      [OWNER],
-    );
-    let sttBody: { model: string; messages: { content: { type: string; input_audio?: { data: string; format: string } }[] }[] } | undefined;
-    const calls = mockFetch([
-      (url) => (url.pathname.endsWith("/getFile") ? Response.json({ ok: true, result: { file_id: "f", file_path: "voice/f.oga" } }) : undefined),
-      (url) => (url.pathname.includes("/file/bot") ? new Response(new Uint8Array([1, 2, 3])) : undefined),
-      (url, init) => {
-        if (url.hostname !== "openrouter.ai") return undefined;
-        const body = JSON.parse(init.bodyText);
-        if (body.model !== "test/audio-model") return undefined;
-        sttBody = body;
-        return Response.json({ choices: [{ message: { content: " зустріч з Іваном завтра о 10 \n" } }] });
-      },
-    ]);
-    const { env, jobs } = testEnv(db);
-    await handleUpdate(env, {
-      update_id: 1,
-      message: {
-        message_id: 7,
-        date: 0,
-        chat: { id: OWNER, type: "private" },
-        from: { id: OWNER, is_bot: false, first_name: "O" },
-        voice: { file_id: "f", file_unique_id: "u", duration: 3 },
-      },
-    });
-    expect(jobs.map((j) => j.body.type)).toEqual(["voice"]);
-    await runWithRetry(env, jobs.shift()!.body, async () => undefined, 1);
-
-    const audio = sttBody!.messages[0]!.content.find((p) => p.type === "input_audio")!.input_audio!;
-    expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
-    expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>зустріч з Іваном завтра о 10</i>"))).toBe(true);
-  });
-
   it("daily cron is open when CRON_SECRET is not set", async () => {
-    const { env } = testEnv(db);
-    env.CRON_SECRET = "";
+    mockFetch([]);
+    const { env } = testEnv({ CRON_SECRET: "" });
     expect((await dailyCron(new Request("https://bot.test/api/cron/daily"), env)).status).toBe(200);
     expect(testConfig.CRON_SECRET).toBe("cron-secret");
   });
 });
 
 describe("changed encryption key", () => {
-  it("asks to reconnect the calendar instead of failing when stored tokens cannot be decrypted", async () => {
-    const { rows } = await db.query<{ id: number }>(
-      "INSERT INTO users (tg_id, full_name, created_at, updated_at) VALUES ($1, 'O K', 0, 0) RETURNING id",
-      [OWNER],
-    );
-    const { encrypt } = await import("../src/lib/crypto");
-    await db.query(
-      "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES ($1, $2, $3, $4, 0)",
-      [rows[0]!.id, await encrypt("old-key", "r"), await encrypt("old-key", "a"), Date.now() + 3600_000],
-    );
-    const { GoogleAuthRevokedError, getAccessToken } = await import("../src/google/oauth");
-    const { env } = testEnv(db);
-    await expect(getAccessToken(env, rows[0]!.id)).rejects.toBeInstanceOf(GoogleAuthRevokedError);
+  it("treats a grant encrypted with another key as not connected, and asks to reconnect", async () => {
+    tg.pinned = tg.message(hiddenData({ k: "google", t: await encrypt("old-key", JSON.stringify({ refresh_token: "r", scope: "", email: null })) }));
+    mockFetch([]);
+    const { env } = testEnv();
+    expect(await hasGoogleAuth(env)).toBe(false);
+    await expect(getAccessToken(env)).rejects.toBeInstanceOf(GoogleAuthRevokedError);
   });
 });
