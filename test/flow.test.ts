@@ -46,7 +46,7 @@ async function seedConnectedOwner(): Promise<number> {
   const now = Date.now();
   const { rows } = await db.query<{ id: number }>(
     `INSERT INTO users (tg_id, tg_username, email, full_name, position, phone, defaults_json, created_at, updated_at)
-     VALUES ($1, 'tester', 'o.kovalenko@ribas.ua', 'Олександр Коваленко', 'Директор', '+380671234567',
+     VALUES ($1, 'tester', 'o.kovalenko@acme.ua', 'Олександр Коваленко', 'Директор', '+380671234567',
        '{"duration_min":60,"format":"offline","address":"вул. Хрещатик, 1"}', $2, $2) RETURNING id`,
     [OWNER, now],
   );
@@ -54,7 +54,7 @@ async function seedConnectedOwner(): Promise<number> {
     "INSERT INTO google_auth (user_id, refresh_token_enc, access_token, expires_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
     [rows[0]!.id, await encrypt(testConfig.ENCRYPTION_KEY, "r"), await encrypt(testConfig.ENCRYPTION_KEY, "a"), now + 3600_000, now],
   );
-  await db.query("INSERT INTO contacts (name, email, updated_at) VALUES ('Олег Мельник', 'o.melnyk@ribas.ua', $1)", [now]);
+  await db.query("INSERT INTO contacts (name, email, updated_at) VALUES ('Олег Мельник', 'o.melnyk@acme.ua', $1)", [now]);
   return rows[0]!.id;
 }
 
@@ -142,7 +142,7 @@ describe("OAuth", () => {
   it("exchanges the code, subscribes to push and queues the initial sync", async () => {
     const userId = await seedConnectedOwner();
     await db.query("DELETE FROM google_auth");
-    const idToken = `x.${btoa(JSON.stringify({ email: "Boss@Ribas.ua" })).replace(/=+$/, "")}.y`;
+    const idToken = `x.${btoa(JSON.stringify({ email: "Boss@Acme.ua" })).replace(/=+$/, "")}.y`;
     const calls = mockFetch([
       (url) =>
         url.hostname === "oauth2.googleapis.com"
@@ -173,7 +173,7 @@ describe("OAuth", () => {
     const { rows } = await db.query<{ refresh_token_enc: string }>("SELECT refresh_token_enc FROM google_auth WHERE user_id = $1", [userId]);
     expect(rows[0]!.refresh_token_enc).toMatch(/^v1\./);
     expect(rows[0]!.refresh_token_enc).not.toContain("rt");
-    expect((await getUserByTgId(env.db, OWNER))!.email).toBe("boss@ribas.ua");
+    expect((await getUserByTgId(env.db, OWNER))!.email).toBe("boss@acme.ua");
     expect(calls.some((c) => c.url.endsWith("/events/watch"))).toBe(true);
     expect(jobs.map((j) => j.body)).toEqual([{ type: "full_sync", userId, notify: true }]);
 
@@ -222,7 +222,7 @@ describe("meeting creation", () => {
           ...inserted,
           status: "confirmed",
           htmlLink: "https://calendar.google.com/event?eid=1",
-          attendees: [...inserted!.attendees, { email: "o.kovalenko@ribas.ua", self: true, responseStatus: "accepted" }],
+          attendees: [...inserted!.attendees, { email: "o.kovalenko@acme.ua", self: true, responseStatus: "accepted" }],
         });
       },
     ]);
@@ -235,12 +235,12 @@ describe("meeting creation", () => {
 
     const llm = calls.find((c) => c.url.includes("openrouter.ai"))!.body as { model: string; messages: { content: unknown }[] };
     expect(llm.model).toBe("test/card-model");
-    expect(String(llm.messages[0]!.content)).toContain("Олег Мельник <o.melnyk@ribas.ua>");
+    expect(String(llm.messages[0]!.content)).toContain("Олег Мельник <o.melnyk@acme.ua>");
 
     const cardMsg = tgCalls(calls, "editMessageText").at(-1)!;
     expect(cardMsg.text).toContain("Нова зустріч");
     // Email from the address book; same corporate domain as the owner → colleague.
-    expect(cardMsg.text).toContain("Олег (свій) — o.melnyk@ribas.ua");
+    expect(cardMsg.text).toContain("Олег (свій) — o.melnyk@acme.ua");
     const buttons = (cardMsg.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat();
     expect(buttons.map((b) => b.callback_data.split(":")[2])).toEqual(["c", "e", "x"]);
     const create = buttons[0]!;
@@ -253,7 +253,7 @@ describe("meeting creation", () => {
     expect(insertUrl!.searchParams.get("conferenceDataVersion")).toBe("1");
     expect(inserted!.attendees).toEqual([
       { email: "ivan@example.com", displayName: "Іван Петренко" },
-      { email: "o.melnyk@ribas.ua", displayName: "Олег" },
+      { email: "o.melnyk@acme.ua", displayName: "Олег" },
     ]);
     expect(inserted!.id).toMatch(/^ais[0-9a-f]{32}$/);
     expect(inserted!.location).toBe("вул. Хрещатик, 1");
@@ -265,7 +265,7 @@ describe("meeting creation", () => {
     expect(rows).toEqual([{ source: "bot", status: "confirmed", title: "Іван Петренко + Олександр" }]);
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Зустріч створена");
     expect(tgCalls(calls, "answerCallbackQuery").map((a) => a.text)).toEqual(["Створено", "Вже обробляється"]);
-    expect((await listContacts(db)).map((c) => c.email).sort()).toEqual(["ivan@example.com", "o.melnyk@ribas.ua"]);
+    expect((await listContacts(db)).map((c) => c.email).sort()).toEqual(["ivan@example.com", "o.melnyk@acme.ua"]);
   });
 
   it("asks a clarifying question when confidence is low, then builds the card from the answer", async () => {
@@ -399,6 +399,6 @@ describe("address book", () => {
     await handleUpdate(env, textUpdate(OWNER, "/contacts"));
     expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Іван Петренко — ivan@example.com");
     await handleUpdate(env, textUpdate(OWNER, "/contact_del ivan@example.com"));
-    expect((await listContacts(db)).map((c) => c.email)).toEqual(["o.melnyk@ribas.ua"]);
+    expect((await listContacts(db)).map((c) => c.email)).toEqual(["o.melnyk@acme.ua"]);
   });
 });

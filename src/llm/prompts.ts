@@ -62,7 +62,7 @@ const RULES = `Правила:
 /** System prompt for extracting a meeting card from text / voice / forwarded chat / screenshots (spec 4.2). */
 export function cardSystemPrompt(owner: User, directory: DirectoryEntry[], now: Date): string {
   return [
-    "Ти — AI-секретар керівника в готельній компанії Ribas Hotels Group. З повідомлення, голосового, пересланої",
+    "Ти — AI-секретар керівника. З повідомлення, голосового, пересланої",
     "переписки або скріншота переписки витягни дані для події в Google Calendar.",
     "",
     `Зараз: ${describeNow(now)}.`,

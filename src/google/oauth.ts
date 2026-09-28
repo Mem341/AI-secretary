@@ -1,5 +1,5 @@
 import { exec, one } from "../db/client";
-import type { Env } from "../env";
+import { type Env, googleConfigured, googleRedirectUri } from "../env";
 import { decrypt, encrypt, fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { expectOk, fetchWithRetry, HttpError } from "../lib/http";
 
@@ -14,11 +14,15 @@ export class GoogleAuthRevokedError extends Error {
 }
 
 export function redirectUri(env: Env): string {
-  return `${env.PUBLIC_URL}/api/oauth/callback`;
+  return googleRedirectUri(env);
 }
 
-/** Link sent to the owner in Telegram; opens /api/oauth/start which redirects to Google. */
+/**
+ * Link sent to the owner in Telegram; opens /api/oauth/start which redirects to Google. Until the deployment has a
+ * Google OAuth client configured, it leads to the /api/setup page that explains how to create one.
+ */
 export async function connectLink(env: Env, userId: number): Promise<string> {
+  if (!googleConfigured(env)) return `${env.PUBLIC_URL}/api/setup`;
   const state = await signToken(env.ENCRYPTION_KEY, { uid: userId }, STATE_TTL_MS);
   return `${env.PUBLIC_URL}/api/oauth/start?state=${encodeURIComponent(state)}`;
 }
@@ -115,12 +119,16 @@ export async function getAccessToken(env: Env, userId: number, forceRefresh = fa
   );
   if (!row) throw new GoogleAuthRevokedError(userId);
   if (!forceRefresh && row.access_token && (row.expires_at ?? 0) > Date.now() + 60_000) {
-    return decrypt(env.ENCRYPTION_KEY, row.access_token);
+    const cached = await decrypt(env.ENCRYPTION_KEY, row.access_token).catch(() => null);
+    if (cached) return cached;
   }
+  // Undecryptable token: ENCRYPTION_KEY (or the bot token it is derived from) changed — reconnect is needed.
+  const refreshToken = await decrypt(env.ENCRYPTION_KEY, row.refresh_token_enc).catch(() => null);
+  if (!refreshToken) throw new GoogleAuthRevokedError(userId);
   let tokens: TokenResponse;
   try {
     tokens = await tokenRequest({
-      refresh_token: await decrypt(env.ENCRYPTION_KEY, row.refresh_token_enc),
+      refresh_token: refreshToken,
       client_id: env.GOOGLE_CLIENT_ID,
       client_secret: env.GOOGLE_CLIENT_SECRET,
       grant_type: "refresh_token",

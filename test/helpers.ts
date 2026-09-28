@@ -77,7 +77,7 @@ export function makeOwner(over: Partial<User> = {}): User {
     id: 1,
     tg_id: OWNER,
     tg_username: "oleksandr_k",
-    email: "o.kovalenko@ribas.ua",
+    email: "o.kovalenko@acme.ua",
     full_name: "Олександр Коваленко",
     position: "Директор з розвитку",
     phone: "+380671234567",

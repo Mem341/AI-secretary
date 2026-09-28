@@ -1,12 +1,13 @@
 import { getUserById, updateUser } from "./db/users";
 import { all } from "./db/client";
-import type { Config, Env } from "./env";
+import { type Config, type Env, googleConfigured, googleRedirectUri, REQUIRED_VARS, voiceConfigured } from "./env";
 import type { Db } from "./db/client";
 import { completeAuth, connectLink, forgetGoogleAuth, googleAuthUrl, verifyState } from "./google/oauth";
 import { channelOwner, RENEW_BEFORE_MS, startWatch } from "./google/sync";
 import { type Job, runWithRetry } from "./jobs";
 import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
+import { code, renderSetupPage, type SetupStep } from "./setup";
 import { esc, Telegram } from "./telegram/api";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
@@ -65,6 +66,7 @@ export async function telegramWebhook(req: Request, env: Env, runtime: Runtime):
 
 /** GET /api/oauth/start — redirects to Google's consent screen. */
 export async function oauthStart(req: Request, env: Env): Promise<Response> {
+  if (!googleConfigured(env)) return Response.redirect(`${env.PUBLIC_URL}/api/setup`, 302);
   const state = new URL(req.url).searchParams.get("state") ?? "";
   if (!(await verifyState(env, state))) {
     return page("Посилання застаріло", "Відкрийте /settings у боті й натисніть «Підключити календар» ще раз.", 400);
@@ -120,10 +122,11 @@ export async function gcalPush(req: Request, env: Env): Promise<Response> {
 
 /**
  * GET /api/cron/daily — Vercel Cron (Hobby plan allows one run a day): renews push channels that expire within two
- * days and runs the full window sync, the safety net for lost pushes.
+ * days and runs the full window sync, the safety net for lost pushes. The work is idempotent; CRON_SECRET, when set,
+ * restricts the endpoint to Vercel Cron.
  */
 export async function dailyCron(req: Request, env: Env): Promise<Response> {
-  if (!safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
+  if (env.CRON_SECRET && !safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
     return new Response("unauthorized", { status: 401 });
   }
   const rows = await all<{ user_id: number; expiration: number | null }>(
@@ -167,4 +170,130 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
   checks.public_url = env.PUBLIC_URL;
   const ok = checks.database === true && checks.telegram_webhook === true;
   return Response.json({ ok, ...checks }, { status: ok ? 200 : 503 });
+}
+
+const BOT_COMMANDS = [
+  { command: "new", description: "Нова зустріч" },
+  { command: "contacts", description: "Адресна книга" },
+  { command: "settings", description: "Профіль і календар" },
+  { command: "cancel", description: "Скасувати поточну дію" },
+  { command: "help", description: "Що вміє бот" },
+];
+
+/** Points the Telegram webhook at this deployment (idempotent) and returns the bot's username. */
+export async function ensureTelegramWebhook(env: Env): Promise<{ username: string; changed: boolean }> {
+  const tg = new Telegram(env);
+  const me = await tg.call<{ username: string }>("getMe", {});
+  const url = `${env.PUBLIC_URL}/api/telegram`;
+  const info = await tg.call<{ url: string }>("getWebhookInfo", {});
+  // The secret cannot be read back, so the webhook is (re)registered whenever the URL differs.
+  if (info.url === url) return { username: me.username, changed: false };
+  await tg.call("setWebhook", {
+    url,
+    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ["message", "callback_query"],
+    drop_pending_updates: true,
+  });
+  await tg.call("setMyCommands", { commands: BOT_COMMANDS });
+  return { username: me.username, changed: true };
+}
+
+/**
+ * GET /api/setup — the page whoever deployed this copy opens first: registers the Telegram webhook and shows a
+ * checklist (Telegram, Google Calendar, voice, first /start). Safe to open repeatedly; reveals no secrets.
+ */
+export async function setupPage(_req: Request, env: Env): Promise<Response> {
+  const steps: SetupStep[] = [
+    { status: "ok", title: "Змінні середовища", details: `Обовʼязкові задані: ${REQUIRED_VARS.map(code).join(", ")}.` },
+    { status: "ok", title: "База даних", details: "Postgres підключено, таблиці створено автоматично." },
+  ];
+
+  let botUsername: string | null = null;
+  try {
+    const { username } = await ensureTelegramWebhook(env);
+    botUsername = username;
+    steps.push({
+      status: "ok",
+      title: "Telegram-бот",
+      details: `Вебхук зареєстровано на ${code(`${env.PUBLIC_URL}/api/telegram`)}. Бот: <a href="https://t.me/${esc(username)}">@${esc(username)}</a>`,
+    });
+  } catch (err) {
+    steps.push({
+      status: "error",
+      title: "Telegram-бот",
+      details: `Не вдалося звʼязатися з Telegram: ${esc(err instanceof Error ? err.message : String(err))}. Перевірте ${code("TELEGRAM_BOT_TOKEN")}.`,
+    });
+  }
+
+  const redirect = googleRedirectUri(env);
+  steps.push(
+    googleConfigured(env)
+      ? { status: "ok", title: "Google Calendar", details: `OAuth-клієнт задано. Redirect URI: ${code(redirect)}` }
+      : {
+          status: "todo",
+          title: "Google Calendar",
+          details: `Створіть OAuth-клієнт, щоб бот міг працювати з вашим календарем:<ol>
+<li><a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Увімкніть Google Calendar API</a> у своєму проєкті Google Cloud.</li>
+<li><a href="https://console.cloud.google.com/auth/overview">OAuth consent screen</a>: для Google Workspace — <b>Internal</b>; для звичайного Gmail — <b>External</b> і кнопка <b>Publish app</b> (у режимі Testing Google відключає доступ кожні 7 днів).</li>
+<li><a href="https://console.cloud.google.com/apis/credentials">Credentials</a> → Create credentials → OAuth client ID → <b>Web application</b>, Authorized redirect URI: ${code(redirect)}</li>
+<li>Додайте у Vercel змінні ${code("GOOGLE_CLIENT_ID")} і ${code("GOOGLE_CLIENT_SECRET")} та зробіть Redeploy.</li></ol>`,
+        },
+  );
+
+  steps.push(
+    voiceConfigured(env)
+      ? { status: "ok", title: "Голосові повідомлення", details: "ElevenLabs підключено." }
+      : {
+          status: "optional",
+          title: "Голосові повідомлення (необовʼязково)",
+          details: `Щоб бот розумів голосові, додайте ${code("ELEVENLABS_API_KEY")} (<a href="https://elevenlabs.io/app/settings/api-keys">ключ ElevenLabs</a>).`,
+        },
+  );
+
+  const owner = await all<{ id: number; full_name: string | null }>(env.db, "SELECT id, full_name FROM users WHERE tg_id = $1", [
+    env.OWNER_TELEGRAM_ID,
+  ]);
+  const calendar = owner.length
+    ? (await all(env.db, "SELECT 1 FROM google_auth WHERE user_id = $1", [owner[0]!.id])).length > 0
+    : false;
+  const botLink = botUsername ? `<a class="button" href="https://t.me/${esc(botUsername)}?start=setup">Відкрити бота</a>` : "";
+  steps.push(
+    calendar
+      ? { status: "ok", title: "Ви підключені", details: "Профіль заповнено, календар підключено. Пишіть боту про зустрічі." }
+      : {
+          status: "todo",
+          title: owner[0]?.full_name ? "Підключіть календар у боті" : "Напишіть боту /start",
+          details: `Бот відповідає лише власнику з ${code("OWNER_TELEGRAM_ID")}. Відкрийте бота, заповніть профіль і натисніть «Підключити Google Calendar».<br>${botLink}`,
+        },
+  );
+  return renderSetupPage(steps);
+}
+
+/** The setup page when the deployment cannot start yet: which variables or which database are missing. */
+export function setupBootErrorPage(source: Record<string, string | undefined>, databaseUrl: string | undefined, message: string): Response {
+  const missing = REQUIRED_VARS.filter((k) => !source[k]?.trim());
+  const steps: SetupStep[] = [];
+  if (missing.length) {
+    steps.push({
+      status: "error",
+      title: "Змінні середовища",
+      details: `Додайте у Vercel (Project → Settings → Environment Variables) і зробіть Redeploy: ${missing.map(code).join(", ")}.<ol>
+<li>${code("TELEGRAM_BOT_TOKEN")} — у <a href="https://t.me/BotFather">@BotFather</a> командою /newbot.</li>
+<li>${code("OWNER_TELEGRAM_ID")} — ваш числовий ID, його напише <a href="https://t.me/userinfobot">@userinfobot</a>. Бот відповідатиме лише цій людині.</li>
+<li>${code("OPENROUTER_API_KEY")} — <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li></ol>`,
+    });
+  } else if (databaseUrl) {
+    // Variables are present, so the failure is the value of one of them or the database connection.
+    steps.push({ status: "error", title: "Запуск", details: esc(message) });
+  } else {
+    steps.push({ status: "ok", title: "Змінні середовища", details: `Обовʼязкові задані: ${REQUIRED_VARS.map(code).join(", ")}.` });
+  }
+  if (!databaseUrl) {
+    steps.push({
+      status: "todo",
+      title: "База даних",
+      details: "У Vercel відкрийте проєкт → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b> (безкоштовний план), підключіть до проєкту й зробіть Redeploy. Таблиці створяться автоматично.",
+    });
+  }
+  return renderSetupPage(steps);
 }

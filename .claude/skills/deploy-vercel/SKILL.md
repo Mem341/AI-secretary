@@ -1,111 +1,77 @@
 ---
 name: deploy-vercel
-description: Deploy the AI-secretary Telegram bot to Vercel for its single owner — collect the owner's inputs, provision Neon Postgres, set environment variables, deploy, register the Telegram webhook and verify with /api/health. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
+description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account — ask the few inputs only the user can provide, create the project with Neon Postgres, set environment variables, deploy, and finish on the /api/setup page. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
 ---
 
 # Deploy AI-secretary to Vercel
 
-The bot serves exactly **one** Telegram user (`OWNER_TELEGRAM_ID`); everyone else is ignored. Work through the
-steps in order. Prefer the Vercel MCP tools when they are connected; fall back to the Vercel CLI (`npx vercel`)
-or to exact dashboard instructions for the user when a tool cannot do a step. Never print secret values back to
-the user or commit them.
+AI-secretary is open source: anyone can run their own copy on their own Vercel account. Each copy serves exactly
+**one** Telegram user — the person deploying it (`OWNER_TELEGRAM_ID`); everyone else is ignored.
 
-## Step 1 — ask the owner (one message, all questions at once)
+Prefer the Vercel MCP tools when they are connected; fall back to the Vercel CLI (`npx vercel`) or to exact
+dashboard instructions when a tool cannot do a step. Never echo secret values back or commit them.
 
-Ask for these, with the "how to get it" hints. Do not continue until every **required** item is answered.
+## Step 1 — ask the user (one message, all at once)
 
-| # | What | Required | How the owner gets it |
-|---|------|----------|-----------------------|
-| 1 | **Telegram bot token** | yes | @BotFather → `/newbot` → copy the token `123456:ABC…` |
-| 2 | **Owner's Telegram ID** — the only person the bot will answer | yes | Write to @userinfobot in Telegram, it replies with a number like `123456789`. A username is not enough — the ID must be numeric. |
-| 3 | **Google OAuth Client ID and Client Secret** | yes | See "Google Cloud setup" below; you can walk the owner through it after the first deploy, because the redirect URI needs the Vercel domain |
-| 4 | **OpenRouter API key** | yes | https://openrouter.ai/keys (needs credit on the account) |
-| 5 | **ElevenLabs API key** (voice messages) | yes | https://elevenlabs.io → Profile → API keys |
-| 6 | Google account type: corporate Google Workspace or personal Gmail? | yes | Determines the OAuth consent screen type (see below) |
-| 7 | Vercel team/account and project name | no, default `ai-secretary` | — |
-| 8 | Models: `LLM_MODEL` (must accept images), `LLM_MODEL_SUMMARY` | no | Defaults: `google/gemini-2.5-flash`, `anthropic/claude-sonnet-4.5` |
+| # | What | Required | How the user gets it |
+|---|------|----------|----------------------|
+| 1 | Telegram **bot token** | yes | @BotFather → `/newbot` → token like `123456:ABC…` |
+| 2 | Their **numeric Telegram ID** — the only person the bot will answer | yes | Message @userinfobot; it replies with a number. A @username does not work. |
+| 3 | **OpenRouter API key** | yes | https://openrouter.ai/keys (the account needs credit) |
+| 4 | Google Calendar now or later? | no | Needs a Google OAuth client; the /api/setup page walks through it with the exact redirect URI after the first deploy |
+| 5 | ElevenLabs API key for voice messages | no | https://elevenlabs.io/app/settings/api-keys |
+| 6 | Which repository to deploy | no | Their fork, or the public `github.com/Mem341/AI-secretary` |
 
-Also confirm access: the Vercel MCP server (or a `VERCEL_TOKEN` for the CLI) and the GitHub repository
-`Mem341/AI-secretary`.
+Nothing else is needed: the webhook secret and encryption key are derived from the bot token, the database URL
+comes from the Neon integration, and the public URL from Vercel.
 
-Generate these yourself (do not ask): `TELEGRAM_WEBHOOK_SECRET`, `ENCRYPTION_KEY`, `CRON_SECRET` —
-each `openssl rand -hex 32`. **`ENCRYPTION_KEY` must never change after the first deploy** (it encrypts the stored
-Google tokens); keep it in the Vercel env only.
+## Step 2 — project and database
 
-## Step 2 — Vercel project
+1. Create a Vercel project from the repository (framework preset **Other**, no build command, root `/`).
+   Easiest for the user: the **Deploy with Vercel** button in README.md (it asks for the three variables and offers
+   Neon). CLI alternative: clone, `npx vercel link --yes`, then deploy.
+2. Add **Neon** Postgres (Marketplace, free plan) to the project: Dashboard → project → Storage → Create Database →
+   Neon. It sets `DATABASE_URL`. The schema is created automatically on the first request.
 
-1. Create the project from the GitHub repository `Mem341/AI-secretary`, branch `main`, framework preset
-   **Other**, no build command, root directory `/`. Git integration is preferred: every push to `main` redeploys.
-   CLI alternative: `npx vercel link --yes --project ai-secretary` then `npx vercel deploy --prod`.
-2. Node.js version comes from `package.json` (`22.x`).
+## Step 3 — environment variables (Production)
 
-## Step 3 — database (Neon Postgres, free)
-
-Add **Neon** from the Vercel Marketplace to the project (Dashboard → project → Storage → Create Database →
-Neon → Free plan, region close to Kyiv, e.g. `eu-central-1`). It sets `DATABASE_URL` for the project
-automatically. The schema is created automatically on the first request — no manual migration.
-
-## Step 4 — environment variables (Production)
-
-| Variable | Value |
-|----------|-------|
-| `OWNER_TELEGRAM_ID` | answer #2 |
-| `TELEGRAM_BOT_TOKEN` | answer #1 |
-| `TELEGRAM_WEBHOOK_SECRET` | generated |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | answer #3 |
-| `OPENROUTER_API_KEY` | answer #4 |
-| `ELEVENLABS_API_KEY` | answer #5 |
-| `ENCRYPTION_KEY` | generated, never rotate |
-| `CRON_SECRET` | generated (Vercel Cron sends it as a Bearer token) |
-| `LLM_MODEL`, `LLM_MODEL_SUMMARY`, `STT_MODEL` | optional |
-| `PUBLIC_URL` | optional; defaults to `https://$VERCEL_PROJECT_PRODUCTION_URL`. Set it only for a custom domain. |
-| `DATABASE_URL` | set by the Neon integration |
+Required: `OWNER_TELEGRAM_ID`, `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY` (+ `DATABASE_URL` from Neon).
+Optional: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ELEVENLABS_API_KEY`, `LLM_MODEL`, `LLM_MODEL_SUMMARY`,
+`CRON_SECRET`, `ENCRYPTION_KEY`, `PUBLIC_URL` (custom domain only). See `.env.example`.
 
 CLI: `printf '%s' "$VALUE" | npx vercel env add NAME production`. Redeploy after changing variables.
 
-## Step 5 — deploy and find the production URL
+## Step 4 — deploy and open the setup page
 
-Deploy to production. The production domain is `https://<project>.vercel.app` (or the custom domain).
-**Deployment Protection:** production must be publicly reachable (Telegram and Google call it). If
-`/api/health` answers with a Vercel login page / 401, turn protection off for production
-(Settings → Deployment Protection).
+Deploy to production and open `https://<project>.vercel.app/` — it redirects to `/api/setup`, which:
 
-## Step 6 — Google Cloud setup (the owner does this in the browser; guide them)
+- registers the Telegram webhook automatically;
+- shows a checklist: variables, database, Telegram bot, Google Calendar, voice, owner connected;
+- for Google, gives the exact **Authorized redirect URI** and the steps.
 
-1. https://console.cloud.google.com → create a project → APIs & Services → Library → enable **Google Calendar API**.
-2. OAuth consent screen:
-   - corporate Workspace → type **Internal**;
-   - personal Gmail → type **External**, then **Publish app** (status *In production*). Explain the "unverified
-     app" warning is expected for a private app. **Do not leave it in "Testing"**: Google expires refresh tokens
-     of apps in testing after 7 days and the calendar would silently disconnect every week.
-   - scopes: `openid`, `email`, `.../auth/calendar.events`.
-3. Credentials → Create credentials → OAuth client ID → **Web application** → Authorized redirect URI exactly:
-   `https://<production-domain>/api/oauth/callback`
-4. Copy the Client ID / Secret into the Vercel env (Step 4) and redeploy.
+If the page is a Vercel login screen, production is behind Deployment Protection: turn it off for production
+(Settings → Deployment Protection) — Telegram and Google must reach the app.
 
-## Step 7 — Telegram webhook
+## Step 5 — Google Calendar (the user does this in the browser)
 
-```bash
-TELEGRAM_BOT_TOKEN=… TELEGRAM_WEBHOOK_SECRET=… PUBLIC_URL=https://<production-domain> npm run telegram:setup
-```
+Follow the steps on /api/setup: enable Google Calendar API, OAuth consent screen (**Internal** for Google Workspace;
+**External + Publish app** for personal Gmail — in *Testing* Google revokes access every 7 days), create a
+**Web application** OAuth client with the redirect URI from the page, add `GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET`, redeploy.
 
-It registers `https://<production-domain>/api/telegram` with the secret header and sets the command menu.
+## Step 6 — verify
 
-## Step 8 — verify
-
-1. `GET https://<production-domain>/api/health` must return `"ok": true` with `"database": true` and
-   `"telegram_webhook": true`. A 500 lists the missing variables by name — fix and redeploy.
-2. Ask the owner to open the bot in Telegram and send `/start`, fill in the profile, press
-   **«Підключити Google Calendar»** and grant access. The bot confirms with the number of events it sees.
-3. `/api/health` should now show `"owner_started": true, "calendar_connected": true`.
-4. Smoke test: the owner writes «зустріч з тестом завтра о 10:00», presses **«Створити»**, and the event appears
-   in Google Calendar.
-5. Check that a stranger is ignored: a message from another Telegram account gets no reply.
+1. `/api/setup` shows everything green except the optional items the user skipped.
+2. The user sends `/start` to their bot, fills in the profile, presses «Підключити Google Calendar»; the bot confirms
+   with the number of events it sees.
+3. Smoke test: «зустріч з тестом завтра о 10:00» → «Створити» → the event appears in Google Calendar.
+4. A message from another Telegram account gets no reply.
+5. `/api/health` returns JSON with `"ok": true` for automated checks.
 
 ## Troubleshooting
 
-- Function logs: Vercel MCP runtime logs, or Dashboard → project → Logs. The owner also receives errors in
-  Telegram and can list the latest with `/errors`.
-- "Доступ до Google Calendar втрачено" — the refresh token was revoked or expired (consent screen left in
-  Testing); fix the consent screen and reconnect via `/settings`.
-- Changing `OWNER_TELEGRAM_ID` hands the bot to another person; the old owner's data stays in the database.
+- Function logs: Vercel MCP runtime logs or Dashboard → Logs. The bot also reports errors to its owner; `/errors`
+  lists the latest.
+- «Доступ до Google Calendar втрачено» — consent screen left in Testing, access revoked, or the bot token /
+  `ENCRYPTION_KEY` changed. Fix the cause and reconnect via `/settings`.
+- To hand the bot to someone else, change `OWNER_TELEGRAM_ID`.

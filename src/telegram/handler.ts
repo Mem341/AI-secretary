@@ -9,7 +9,7 @@ import {
 import { all } from "../db/client";
 import { cancelInputDrafts } from "../db/drafts";
 import { deleteContact, ensureUser, listContacts, saveContact, updateUser, type User } from "../db/users";
-import { isOwner, type Env } from "../env";
+import { isOwner, type Env, voiceConfigured } from "../env";
 import { hasGoogleAuth } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
 import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
@@ -92,6 +92,10 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
   }
 
   if (msg.voice) {
+    if (!voiceConfigured(env)) {
+      await tg.send(msg.chat.id, "Голосові повідомлення вимкнені: у налаштуваннях розгортання не задано <code>ELEVENLABS_API_KEY</code>. Поки що напишіть текстом.");
+      return;
+    }
     if ((msg.voice.file_size ?? 0) > TG_DOWNLOAD_LIMIT) {
       await tg.send(msg.chat.id, "Голосове завелике (понад 20 МБ).");
       return;
