@@ -13,6 +13,7 @@ export interface Config {
   PUBLIC_URL: string;
   LLM_MODEL: string;
   LLM_MODEL_SUMMARY: string;
+  /** OpenRouter model with audio input that transcribes voice messages. */
   STT_MODEL: string;
 
   TELEGRAM_BOT_TOKEN: string;
@@ -24,8 +25,6 @@ export interface Config {
   /** Google Calendar; "" until the owner creates an OAuth client (see /api/setup). */
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
-  /** Voice messages; "" disables them. */
-  ELEVENLABS_API_KEY: string;
   /** When set, Vercel Cron must send it as a Bearer token; "" leaves the (idempotent) daily cron open. */
   CRON_SECRET: string;
   /** Zoom Server-to-Server OAuth app; "" disables Zoom as a meeting format (Google Meet still works). */
@@ -51,7 +50,7 @@ export interface Env extends Config {
 
 export const DEFAULT_LLM_MODEL = "google/gemini-2.5-flash";
 export const DEFAULT_LLM_MODEL_SUMMARY = "anthropic/claude-sonnet-4.5";
-export const DEFAULT_STT_MODEL = "scribe_v1";
+export const DEFAULT_STT_MODEL = "google/gemini-2.5-flash";
 
 export const REQUIRED_VARS = ["OWNER_TELEGRAM_ID", "TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY"] as const;
 
@@ -95,7 +94,6 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     ENCRYPTION_KEY: val("ENCRYPTION_KEY") || derive(botToken, "encryption"),
     GOOGLE_CLIENT_ID: val("GOOGLE_CLIENT_ID"),
     GOOGLE_CLIENT_SECRET: val("GOOGLE_CLIENT_SECRET"),
-    ELEVENLABS_API_KEY: val("ELEVENLABS_API_KEY"),
     CRON_SECRET: val("CRON_SECRET"),
     ZOOM_ACCOUNT_ID: val("ZOOM_ACCOUNT_ID"),
     ZOOM_CLIENT_ID: val("ZOOM_CLIENT_ID"),
@@ -115,10 +113,6 @@ export function isOwner(env: Config, tgId: number | undefined): boolean {
 
 export function googleConfigured(env: Config): boolean {
   return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
-}
-
-export function voiceConfigured(env: Config): boolean {
-  return !!env.ELEVENLABS_API_KEY;
 }
 
 export function zoomConfigured(env: Config): boolean {

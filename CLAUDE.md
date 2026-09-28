@@ -3,7 +3,7 @@
 Open-source personal Telegram secretary: anyone deploys their own copy (Vercel or AWS); each copy serves one owner
 (`OWNER_TELEGRAM_ID`). Creates Google Calendar meetings from text, voice, forwarded chats and screenshots, reports
 calendar changes, reschedules/cancels by reply, and works with Gmail. Node.js + TypeScript, Postgres (**Neon**),
-OpenRouter (LLM, model selectable per owner), ElevenLabs (speech-to-text), optional Zoom.
+OpenRouter (LLM with a model selectable per owner, and speech-to-text for voice), optional Zoom.
 
 ## Deploying
 
@@ -16,7 +16,7 @@ The same code runs on both platforms; pick the skill by what the user asked for:
 Each skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
 Google OAuth client ID + secret (plus a Neon URL on AWS) — validates them, and never asks about optional extras.
 The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, the `/api/setup` page registers the Telegram
-webhook and shows what is left to configure (Google, Gmail push, Zoom, voice).
+webhook and shows what is left to configure (Google, Gmail push, Zoom).
 
 ## Layout
 

@@ -6,7 +6,7 @@
 |---|----|---------|----------|
 | 1 | **Токен Telegram-бота** | `7412345678:AAH3k…` | [§1](#1-токен-telegram-бота) |
 | 2 | **Ваш Telegram ID** (число) | `123456789` | [§2](#2-ваш-telegram-id) |
-| 3 | **Ключ OpenRouter** | `sk-or-v1-…` | [§3](#3-ключ-openrouter) |
+| 3 | **Ключ OpenRouter** (ШІ і голосові) | `sk-or-v1-…` | [§3](#3-ключ-openrouter) |
 | 4 | **Google Client ID і Client Secret** | `…apps.googleusercontent.com` і `GOCSPX-…` | [§4](#4-google-client-id-і-client-secret) |
 
 Залежно від місця розгортання:
@@ -16,13 +16,13 @@
   - рядок підключення до бази з [neon.tech](https://neon.tech) (безкоштовно; `postgresql://…?sslmode=require`);
   - доступ до вашого акаунта AWS.
 
-**Необовʼязково, можна додати будь-коли пізніше:**
+Голосові повідомлення розпізнає той самий OpenRouter — окремий ключ не потрібен.
 
-- голосові повідомлення (ключ ElevenLabs, розпізнавання мовлення);
-- Zoom;
-- миттєві сповіщення про нові листи (Pub/Sub).
+**Необовʼязково, якщо захочете (без цього бот повністю працює):**
 
-Без них бот повністю працює. Голосові він просто попросить написати текстом.
+- **Zoom** — зустрічі в Zoom замість Google Meet: Account ID, Client ID і Client Secret застосунку
+  Server-to-Server OAuth ([Zoom Marketplace](https://marketplace.zoom.us/develop/create), scope `meeting:write:admin`);
+- миттєві сповіщення про нові листи (Cloud Pub/Sub) — кроки на сторінці `/api/setup`.
 
 ---
 

@@ -15,11 +15,15 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 
 - **Talk in the user's language.** Russian or Ukrainian if they write that way.
 - **Ask for exactly the four items in Step 1, in one message.** Do not ask about anything else:
-  - not ElevenLabs/voice, Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
+  - not Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
   - not the database (you create it on Vercel);
   - not the repository (use the public `github.com/Mem341/AI-secretary` unless they mention a fork).
 
   Optional extras are mentioned once, in the final report.
+- **Voice needs nothing:** OpenRouter transcribes voice messages with the same key.
+- **Zoom is optional:** if the user offers Zoom credentials (Account ID, Client ID, Client Secret of a
+  Server-to-Server OAuth app), set `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID` and `ZOOM_CLIENT_SECRET`; otherwise skip it.
+  Google Meet works without it.
 - **If the user lacks an item,** send the steps for that item from `docs/what-you-need.md` (§1–§4). Translate
   them if needed and keep the links. Do not send the steps for items they already have.
 - **Validate every value (Step 2) before using it.** A wrong value found now saves a broken deploy.
@@ -120,7 +124,6 @@ Keep it short:
 - anything left for the user to do (for example, adding the redirect URI).
 
 Then one line on optional extras:
-- voice messages (ElevenLabs key);
 - Zoom;
 - instant new-mail notices (Pub/Sub).
 

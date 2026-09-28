@@ -10,7 +10,7 @@ import { gmailSync, startGmailWatch } from "./google/gmailPush";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope } from "./google/oauth";
 import { fullSync, incrementalSync, startWatch } from "./google/sync";
 import { logError } from "./lib/errors";
-import { transcribe } from "./stt/elevenlabs";
+import { transcribe } from "./stt/transcribe";
 import { esc, Telegram } from "./telegram/api";
 
 /** Background jobs. They run after the HTTP response (Vercel `waitUntil`), with retries. */
@@ -55,7 +55,7 @@ export async function runJob(env: Env, job: Job): Promise<void> {
       if (!user) return;
       const tg = new Telegram(env);
       const { bytes } = await tg.download(job.fileId);
-      const text = (await transcribe(env, bytes, "voice.ogg")).text.trim();
+      const text = await transcribe(env, bytes);
       if (!text) {
         await tg.send(job.chatId, "Не вдалося розібрати голосове. Спробуйте ще раз або напишіть текстом.", { replyTo: job.messageId });
         return;
