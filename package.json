@@ -1,0 +1,23 @@
+{
+  "name": "ai-secretary",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply ai-secretary --local",
+    "db:migrate:remote": "wrangler d1 migrations apply ai-secretary --remote",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "telegram:setup": "node scripts/telegram-setup.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260928.1",
+    "typescript": "^5.9.3",
+    "vitest": "~4.1.0",
+    "wrangler": "^4.143.0"
+  }
+}
