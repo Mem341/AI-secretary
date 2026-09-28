@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "dev": "vercel dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "telegram:setup": "node scripts/telegram-setup.mjs"
@@ -11,6 +12,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^22.20.4",
     "typescript": "^5.9.3",
+    "vercel": "^60.1.3",
     "vitest": "~4.1.0"
   },
   "dependencies": {

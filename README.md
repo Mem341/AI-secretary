@@ -1,142 +1,128 @@
-# AI-secretary
+# 🗓 AI-secretary
 
-Telegram-бот «AI-секретар» для керівників Ribas Hotels Group: створює зустрічі з тексту, голосового, пересланої
-переписки чи скріншота, розсилає інвайти через Google Calendar, бачить зміни в календарі через push від Google,
-нагадує за 30 хв і веде протоколи.
+Особистий Telegram-бот-секретар для одного керівника. Пишете, надиктовуєте, пересилаєте переписку або кидаєте
+скріншот — бот готує картку зустрічі, а після «Створити» подія зʼявляється в Google Calendar і учасники отримують
+запрошення на пошту.
 
-Специфікація: «ТЗ: AI-секретар для керівників Ribas Hotels Group» (Claude Docs).
+**Node.js + TypeScript · Vercel Functions · Neon Postgres · OpenRouter · ElevenLabs**
 
-## Статус етапів
+> 🔒 **Бот працює строго для однієї людини** — власника з `OWNER_TELEGRAM_ID`. Повідомлення й кнопки від будь-кого
+> іншого ігноруються без відповіді: сторонній навіть не дізнається, що бот існує.
 
-| Етап | Зміст | Статус |
-| --- | --- | --- |
-| 1. Ядро | онбординг, whitelist, OAuth, push-синхронізація, картка зустрічі, створення події, інвайти | ✅ реалізовано |
-| 2. Нагадування | щохвилинний cron, нагадування за 30 хв із брифом, перенесення/скасування, `/today`, `/week` | ⏳ далі |
-| 3. Протокол | запис, транскрибація, підсумки, розсилка, `/history` | ⏳ |
+---
 
-Схема БД (`migrations/0001_init.sql`) одразу містить усі 9 таблиць з розділу 5 ТЗ, щоб наступні етапи не
-перебудовували дані.
+## 🚀 Розгортання
 
-## Архітектура
+Найпростіше — попросити агента **Claude Code** з підключеним Vercel MCP:
 
-Один Cloudflare Worker (TypeScript), без сервера:
+> «Розгорни бота на Vercel»
+
+Агент знайде інструкцію `.claude/skills/deploy-vercel/SKILL.md`, одним повідомленням спитає все потрібне, сам
+створить секрети, підключить базу, задеплоїть, зареєструє вебхук і перевірить результат через `/api/health`.
+
+Що підготувати заздалегідь:
+
+| | Що | Де взяти |
+|---|---|---|
+| 1 | Токен бота | [@BotFather](https://t.me/BotFather) → `/newbot` |
+| 2 | Ваш **числовий** Telegram ID | напишіть [@userinfobot](https://t.me/userinfobot) |
+| 3 | Google OAuth Client ID і Secret | Google Cloud Console — агент проведе по кроках |
+| 4 | Ключ OpenRouter | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| 5 | Ключ ElevenLabs | [elevenlabs.io](https://elevenlabs.io) → Profile → API keys |
+
+---
+
+## ✨ Можливості
+
+| | |
+|---|---|
+| 📝 **Будь-який вхід** | текст, голосове, переслана переписка (серія збирається 15 с), скріншот |
+| 🃏 **Картка з підтвердженням** | правки звичайним текстом, уточнювальне питання, 3 вільні слоти, попередження про перетини |
+| 📧 **Інвайти** | подія в Google Calendar з розсилкою на пошту, Google Meet, гості можуть редагувати |
+| 🔄 **Push від Google** | бот бачить і події, створені вручну в календарі |
+| 📇 **Адресна книга** | імена й email учасників запамʼятовуються — наступного разу достатньо імені |
+| 🛟 **Надійність** | 3 спроби на кожну фонову задачу, про помилки бот пише вам сам |
+
+### Команди
+
+| Команда | Дія |
+|---|---|
+| `/start` | профіль і підключення календаря |
+| `/new` | нова зустріч (або просто напишіть / перешліть) |
+| `/contacts` | адресна книга |
+| `/contact Імʼя Прізвище email` | додати контакт (`/contact_del email` — видалити) |
+| `/settings` | профіль, значення за замовчуванням, календар |
+| `/cancel` | скасувати поточну дію |
+| `/errors` | останні помилки |
+
+**Далі за планом:** етап 2 — нагадування за 30 хв, перенесення/скасування, `/today`, `/week`;
+етап 3 — записи, транскрибація, підсумки.
+
+---
+
+## 🏗 Архітектура
 
 ```
-Telegram ──webhook──▶ /telegram/webhook ─┐
-Google   ──push────▶ /gcal/push ─────────┤        ┌──▶ Google Calendar API
-Браузер  ──OAuth───▶ /oauth/google/*  ───┼─ Worker ┼──▶ OpenRouter (LLM)
-Cron (щодня / 6 год) ────────────────────┤        └──▶ ElevenLabs Scribe (голос)
-Queue ai-secretary-jobs ◀──▶ consumer ───┘   D1 (дані) · R2 (файли, етап 3)
+Telegram ─ webhook ─▶ /api/telegram ─────┐
+Google   ─ push ────▶ /api/gcal-push ────┤            ┌─▶ Google Calendar API
+Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─ Vercel  ──┼─▶ OpenRouter (LLM)
+Vercel Cron (щодня) ▶ /api/cron/daily ───┤  Functions └─▶ ElevenLabs (голос)
+Перевірка ──────────▶ /api/health ───────┘     │
+                                          Neon Postgres
 ```
 
-- **Webhook Telegram** відповідає одразу; все важке (LLM, транскрибація, синхронізація) іде в Cloudflare Queue
-  з повторними спробами (3 рази), остаточний збій пишеться в `errors` і приходить адміністратору.
-- **Push від Google**: після OAuth бот підписується `events.watch` на `https://<worker>/gcal/push` із секретним
-  токеном каналу. На кожен сигнал — `events.list` із `syncToken` (лише змінені події) → дзеркало `meetings` у D1.
-  Токен каналу перевіряється, невідомі канали ігноруються.
-- **Cron**: `17 3 * * *` — продовження каналів, яким лишилось < доби; `5 */6 * * *` — повний sync вікна
-  [−1 день, +30 днів] як страховка від втрачених push (заодно підтягує нові екземпляри повторюваних подій).
-- **Картка зустрічі**: LLM повертає JSON за схемою з ТЗ; код валідує його, нічого не вигадує, підставляє
-  дефолти з профілю, email співробітників із довідника (таблиця `users`), прибирає власника з учасників.
-  `confidence < 0.7` → уточнювальне питання замість картки.
-- **Переслана переписка**: повідомлення збираються в одну чернетку атомарно (унікальний індекс на
-  `drafts(user_id) WHERE state='collecting'`), обробляє лише задача з останнім `batch_seq` — через 15 с після
-  останнього повідомлення.
-- **Створення події**: `events.insert` з `sendUpdates=all` (Google сам розсилає інвайти), `guestsCanModify`,
-  `guestsCanInviteOthers`, Google Meet через `conferenceData`. Id події детермінований від чернетки, тож повтор
-  запиту не створить дубль; подвійне натискання «Створити» відсікається compare-and-set станом чернетки.
-- **Безпека**: whitelist Telegram ID, перевірка `X-Telegram-Bot-Api-Secret-Token`, підписаний і обмежений у часі
-  `state` в OAuth, refresh/access-токени Google шифруються AES-256-GCM ключем з `ENCRYPTION_KEY`.
+- **Миттєва відповідь.** Функція одразу відповідає Telegram, а LLM, транскрибація й синхронізація виконуються
+  після відповіді (`waitUntil`).
+- **Push замість опитування.** `events.watch` → Google повідомляє про зміни → `events.list` із `syncToken` бере
+  лише змінене. Щоденний cron продовжує підписку й робить страхувальну синхронізацію на 30 днів.
+- **Нуль ручної роботи з БД.** Таблиці створюються автоматично при першому запиті.
+- **Безпека.** Перевірка власника на кожному вході, секрет вебхука Telegram, токен каналу Google, `CRON_SECRET`,
+  підписаний `state` в OAuth, токени Google зашифровані AES-256-GCM.
 
-Структура:
+<details>
+<summary><b>Навіщо база даних</b></summary>
+
+Функції Vercel нічого не памʼятають між запитами, тому без сховища бот не працюватиме правильно:
+
+| Що зберігається | Навіщо |
+|---|---|
+| Токени Google (зашифровані) | створювати події від вашого імені без повторного входу |
+| Картка до «Створити» | кнопки «Змінити / Створити» натискаються в окремому запиті |
+| Серія пересланих повідомлень | зібрати переписку в одну картку |
+| Стан push-каналу, `syncToken` | отримувати від Google лише зміни й продовжувати підписку |
+| Дзеркало календаря | вільні слоти, перетини, а на етапі 2 — нагадування |
+| Адресна книга, помилки | email за іменем, діагностика |
+
+Безкоштовного Neon (0.5 GB) для однієї людини вистачить із великим запасом.
+</details>
+
+<details>
+<summary><b>Структура проєкту</b></summary>
 
 ```
-src/
-  index.ts            маршрути, cron, consumer черги
-  jobs.ts             типи задач черги
-  bot/                онбординг і налаштування, картка зустрічі, сценарій створення
-  google/             OAuth, клієнт Calendar API, push-синхронізація
-  telegram/           клієнт Bot API, маршрутизація апдейтів, адмін-команди
-  llm/                OpenRouter, промпти
-  stt/                ElevenLabs Scribe
-  db/                 доступ до D1
-  lib/                час (Europe/Kyiv), криптографія, HTTP з повторами, лог помилок
-migrations/           схема D1
-test/                 тести у рантаймі Workers (vitest + miniflare)
+api/                 Vercel Functions (тонкі обгортки)
+src/app.ts           HTTP-обробники й запуск фонових задач
+src/jobs.ts          фонові задачі з повторами
+src/bot/             онбординг, картка зустрічі, створення події
+src/telegram/        Bot API, маршрутизація, перевірка власника
+src/google/          OAuth, Calendar API, push-синхронізація
+src/db/              Postgres і міграції схеми
+src/llm/, src/stt/   OpenRouter, ElevenLabs
+test/                тести (Postgres у памʼяті через PGlite)
 ```
+</details>
 
-## Розгортання
+---
 
-### 1. Telegram
+## 🧑‍💻 Розробка
 
-Створіть бота в [@BotFather](https://t.me/BotFather), збережіть токен. Згенеруйте секрет вебхука
-(наприклад, `openssl rand -hex 32`).
-
-### 2. Google Cloud
-
-1. Створіть проєкт, увімкніть **Google Calendar API**.
-2. OAuth consent screen: для Google Workspace — тип *Internal*; якщо в пілоті є особисті Gmail — *External*
-   і додайте їх у *Test users*.
-3. Credentials → OAuth client ID → *Web application*, Authorized redirect URI:
-   `https://<worker>/oauth/google/callback`.
-
-### 3. Cloudflare
-
-```bash
-npm ci
-npx wrangler d1 create ai-secretary          # підставте database_id у wrangler.jsonc
-npx wrangler r2 bucket create ai-secretary-files
-npx wrangler queues create ai-secretary-jobs
-npm run db:migrate:remote
-```
-
-У `wrangler.jsonc` задайте `PUBLIC_URL` (адреса воркера без `/` в кінці) і `ADMIN_TG_IDS` (Telegram ID
-адміністраторів через кому). Моделі змінюються змінними `LLM_MODEL` (картка; має підтримувати зображення для
-скріншотів) і `LLM_MODEL_SUMMARY` (підсумки, етап 3) без зміни коду.
-
-Секрети:
-
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-npx wrangler secret put OPENROUTER_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-npx wrangler secret put ENCRYPTION_KEY       # openssl rand -base64 32; не змінювати після запуску
-```
-
-Деплой: `npm run deploy` або GitHub → Workers Builds (build command `npm ci`, deploy command
-`npx wrangler deploy`).
-
-### 4. Вебхук і меню бота
-
-```bash
-TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... PUBLIC_URL=https://<worker> npm run telegram:setup
-```
-
-## Користування
-
-- Адміністратор (з `ADMIN_TG_IDS`) потрапляє у whitelist автоматично як керівник.
-- Додати людей: `/allow <telegram_id> owner` (керівник) або `/allow <telegram_id> member` (внутрішній учасник).
-  Сторонній, що написав боту, бачить свій Telegram ID — його можна одразу передати адміністратору.
-- `/deny <telegram_id>` — вимкнути доступ, `/users` — список і стан календарів, `/errors` — останні помилки.
-- Керівник: `/start` → профіль (ПІБ, посада, телефон, тривалість, формат, адреса) → «Підключити Google Calendar».
-  Далі достатньо написати, надиктувати, переслати переписку або скинути скріншот.
-- Внутрішній учасник: `/start` → імʼя та робоча пошта (так бот зв'язує email з Telegram для нагадувань).
-
-## Розробка
+Потрібен лише **Node.js 22**.
 
 ```bash
 npm ci
 npm run typecheck
-npm test                 # vitest у рантаймі Workers, з D1 і міграціями
-cp .dev.vars.example .dev.vars && npm run dev
+npm test          # Postgres у памʼяті (PGlite), усі зовнішні HTTP замокані
+npm run dev       # локальний запуск через Vercel CLI
 ```
 
-Примітки:
-
-- Зайнятість для попередження про перетин і для підбору 3 вільних слотів береться з дзеркала календаря в D1
-  (його тримає актуальним push), а не з окремого `freebusy`-запиту — так не потрібен додатковий OAuth-scope,
-  а в попередженні видно назву події, з якою перетин.
-- `compatibility_date` обмежена версією workerd, з якою працює `@cloudflare/vitest-pool-workers`.
+Змінні середовища — у `.env.example`.
