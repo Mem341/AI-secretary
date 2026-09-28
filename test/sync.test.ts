@@ -198,3 +198,76 @@ describe("push sync", () => {
     expect(jobs.map((j) => j.body)).toEqual([{ type: "daily", userId, renew: true }]);
   });
 });
+
+describe("instant notifications about changes made outside the bot", () => {
+  let userId: number;
+  const soon = Date.now() + 2 * 86400_000;
+  const iso = (t: number) => new Date(t).toISOString();
+
+  beforeEach(async () => {
+    await resetDb(db);
+    env = testEnv(db).env;
+    userId = await seedOwner();
+    await db.query(
+      `INSERT INTO watch_channels (user_id, channel_id, resource_id, token, expiration, sync_token, updated_at)
+       VALUES ($1, 'c', 'r', 't', 0, 'tok', 0)`,
+      [userId],
+    );
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function pushReturns(items: GEvent[]) {
+    return mockFetch([(url) => (url.searchParams.get("syncToken") ? Response.json({ items, nextSyncToken: "tok" }) : undefined)]);
+  }
+
+  const sent = (calls: ReturnType<typeof mockFetch>) =>
+    calls.filter((c) => c.url.endsWith("/sendMessage")).map((c) => String((c.body as { text: string }).text));
+
+  it("reports a new event, links the notice to it, then reports a new time and a cancellation", async () => {
+    let calls = pushReturns([timed("ext1", iso(soon), iso(soon + 3600_000), { hangoutLink: "https://meet.google.com/x" })]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)).toHaveLength(1);
+    expect(sent(calls)[0]).toContain("Нова подія в календарі");
+    expect(sent(calls)[0]).toContain("https://meet.google.com/x");
+    const { rows: links } = await db.query<{ ref_type: string }>("SELECT ref_type FROM message_links");
+    expect(links).toEqual([{ ref_type: "meeting" }]);
+
+    vi.restoreAllMocks();
+    calls = pushReturns([timed("ext1", iso(soon + 3600_000), iso(soon + 7200_000))]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)[0]).toContain("перенесено");
+
+    vi.restoreAllMocks();
+    calls = pushReturns([{ id: "ext1", status: "cancelled" }]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)[0]).toContain("скасовано");
+
+    // The same cancellation arriving again is not a new change.
+    vi.restoreAllMocks();
+    calls = pushReturns([{ id: "ext1", status: "cancelled" }]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)).toEqual([]);
+  });
+
+  it("stays silent for the echo of the bot's own write and for description-only edits", async () => {
+    const { markSelfWrite } = await import("../src/db/selfWrites");
+    await markSelfWrite(db, "own1");
+    let calls = pushReturns([timed("own1", iso(soon), iso(soon + 3600_000))]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)).toEqual([]);
+
+    vi.restoreAllMocks();
+    calls = pushReturns([timed("ext2", iso(soon), iso(soon + 3600_000))]);
+    await incrementalSync(env, userId);
+    vi.restoreAllMocks();
+    calls = pushReturns([timed("ext2", iso(soon), iso(soon + 3600_000), { description: "нотатка" })]);
+    await incrementalSync(env, userId);
+    expect(sent(calls)).toEqual([]);
+  });
+
+  it("does not report during a full (backfill) sync", async () => {
+    const calls = mockFetch([(url) => (url.pathname.endsWith("/events") ? Response.json({ items: [timed("x", iso(soon), iso(soon + 3600_000))], nextSyncToken: "t" }) : undefined)]);
+    await fullSync(env, userId);
+    expect(sent(calls)).toEqual([]);
+  });
+});

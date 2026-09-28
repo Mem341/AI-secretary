@@ -13,7 +13,7 @@ import {
   type SourceType,
   transition,
 } from "../db/drafts";
-import { linkMessage } from "../db/messageLinks";
+import { findMessageLink, linkMessage } from "../db/messageLinks";
 import { listMeetingsBetween, markMeetingSource, upsertMeeting } from "../db/meetings";
 import { markSelfWrite } from "../db/selfWrites";
 import { getUserById, listContacts, modelOf, saveContact, type User } from "../db/users";
@@ -28,6 +28,7 @@ import { cardForEdit, cardSystemPrompt, editSystemPrompt } from "../llm/prompts"
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
 import { createZoomMeeting } from "../zoom/client";
+import { startActionDraft } from "./actions";
 import {
   attendeesWithoutEmail,
   buildEventBody,
@@ -64,8 +65,10 @@ async function requireCalendar(env: Env, user: User, chatId: number): Promise<bo
 }
 
 /**
- * Owner's free text (typed or transcribed): an edit of the card they replied to, an answer to the bot's
- * clarifying question / "Змінити" prompt, or a new meeting request.
+ * Owner's free text (typed or transcribed) — the router for every kind of draft. In order: continue whatever
+ * draft they are replying to or were last asked to complete (a meeting card, an action on an existing meeting,
+ * a Gmail action); otherwise, a reply to a message about a specific meeting starts a new action on it
+ * (reschedule/cancel/note/attendees); otherwise, it is a new meeting request (the original, default behavior).
  */
 export async function handleOwnerText(
   env: Env,
@@ -79,6 +82,17 @@ export async function handleOwnerText(
   const target =
     (replyToMessageId ? await findDraftByMessage(env.db, user.id, replyToMessageId) : null) ??
     (await findInputDraft(env.db, user.id));
+
+  if (target?.kind === "action") {
+    if (target.state === "pending") {
+      await appendSource(env.db, target.id, text, true);
+      if (await transition(env.db, target.id, ["pending"], "parsing")) {
+        await tg.typing(chatId);
+        await env.jobs.send({ type: "action_parse", draftId: target.id });
+      }
+    }
+    return;
+  }
 
   if (target?.state === "clarify") {
     await appendSource(env.db, target.id, `Уточнення: ${text}`, false);
@@ -95,6 +109,14 @@ export async function handleOwnerText(
       await env.jobs.send({ type: "edit", draftId: target.id, instruction: text });
     }
     return;
+  }
+
+  if (replyToMessageId) {
+    const link = await findMessageLink(env.db, replyToMessageId);
+    if (link?.ref_type === "meeting") {
+      await startActionDraft(env, user, chatId, link.ref_id, text);
+      return;
+    }
   }
 
   if (!(await requireCalendar(env, user, chatId))) return;

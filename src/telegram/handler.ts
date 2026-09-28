@@ -1,3 +1,4 @@
+import { handleActionCallback } from "../bot/actions";
 import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE_S, PHOTO_DEBOUNCE_S, photoLine } from "../bot/meetings";
 import {
   handleDialogCallback,
@@ -201,6 +202,7 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   let toast: string | undefined;
   try {
     if (kind === "d") toast = await handleCardCallback(env, user, a, b);
+    else if (kind === "a") toast = await handleActionCallback(env, user, a, b);
     else if (kind === "o") toast = await handleDialogCallback(env, user, a, b);
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);

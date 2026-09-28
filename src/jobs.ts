@@ -1,6 +1,8 @@
+import { parseActionDraft } from "./bot/actions";
 import { editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
 import { helpText } from "./bot/onboarding";
 import { getDraft, transition } from "./db/drafts";
+import { pruneSelfWrites } from "./db/selfWrites";
 import { getUserById } from "./db/users";
 import type { Env } from "./env";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError } from "./google/oauth";
@@ -17,6 +19,8 @@ export type Job =
   | { type: "parse"; draftId: string }
   /** Apply a free-text correction to the card. */
   | { type: "edit"; draftId: string; instruction: string }
+  /** Classify a reply about an existing meeting (reschedule/cancel/note) and show the confirmation. */
+  | { type: "action_parse"; draftId: string }
   /** Transcribe a voice message, then treat it as text. */
   | { type: "voice"; userId: number; chatId: number; fileId: string; messageId: number; replyTo: number | null }
   /** Incremental calendar sync after a Google push. */
@@ -36,6 +40,8 @@ export async function runJob(env: Env, job: Job): Promise<void> {
       return parseDraft(env, job.draftId);
     case "edit":
       return editDraft(env, job.draftId, job.instruction);
+    case "action_parse":
+      return parseActionDraft(env, job.draftId);
     case "voice": {
       const user = await getUserById(env.db, job.userId);
       if (!user) return;
@@ -65,6 +71,7 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     case "daily":
       if (job.renew) await startWatch(env, job.userId);
       await fullSync(env, job.userId);
+      await pruneSelfWrites(env.db);
       return;
   }
 }
@@ -82,7 +89,7 @@ async function handleRevoked(env: Env, userId: number): Promise<void> {
 /** Tells the owner a job finally failed so the request is not lost silently. */
 async function reportJobFailure(env: Env, job: Job): Promise<void> {
   const tg = new Telegram(env);
-  if (job.type === "batch" || job.type === "parse" || job.type === "edit") {
+  if (job.type === "batch" || job.type === "parse" || job.type === "edit" || job.type === "action_parse") {
     const draft = await getDraft(env.db, job.draftId);
     if (!draft) return;
     await transition(env.db, draft.id, ["parsing", "collecting"], "failed");

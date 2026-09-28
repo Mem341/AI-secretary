@@ -99,3 +99,40 @@ export function cardForEdit(card: Card): string {
   const { slots: _slots, ...rest } = card;
   return JSON.stringify(rest, null, 2);
 }
+
+const ACTION_SCHEMA = `{
+  "action": "reschedule" | "cancel" | "note" | "unclear",
+  "new_start": "YYYY-MM-DDTHH:MM:SS+HH:MM" | null,
+  "new_duration_min": number | null,
+  "note_text": string | null,
+  "clarify_question": string | null
+}`;
+
+/**
+ * System prompt for a free-text reply about ONE specific, already-existing meeting (spec 4.7): reschedule,
+ * cancel, or append a note to its description. "Who is attending" is answered straight from the stored
+ * meeting record in code, without an LLM call, so it is never asked here.
+ */
+export function actionSystemPrompt(meeting: { title: string | null; start_at: number; end_at: number; description: string | null }, now: Date): string {
+  return [
+    "Ти — AI-секретар керівника. Керівник відповів на повідомлення про КОНКРЕТНУ зустріч у Google Calendar,",
+    "яка вже існує. Визнач, що він хоче зробити з цією зустріччю.",
+    "",
+    `Зараз: ${describeNow(now)}.`,
+    `Зустріч: «${meeting.title ?? "без назви"}», ${new Date(meeting.start_at).toISOString()} — ${new Date(meeting.end_at).toISOString()} (UTC).`,
+    meeting.description ? `Поточний опис:\n${meeting.description}` : "",
+    "",
+    `Схема відповіді:\n${ACTION_SCHEMA}`,
+    "",
+    `Правила:
+- "reschedule": перенесення на інший час/дату — постав "new_start" (з офсетом Європи/Києва), і "new_duration_min"
+  лише якщо тривалість також названа явно; інакше null (тривалість залишається старою).
+- "cancel": скасувати/відмінити/видалити зустріч.
+- "note": додати нотатку, коментар чи підсумок до опису — "note_text" дослівно те, що додати.
+- "unclear": незрозуміло, чого хоче керівник, або дані для reschedule не вдалось розпізнати — постав коротке
+  уточнювальне запитання в "clarify_question" українською.
+- Відповідай ЛИШЕ JSON-обʼєктом за схемою, нічого не вигадуй.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
