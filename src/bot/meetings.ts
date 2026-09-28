@@ -13,8 +13,10 @@ import {
   type SourceType,
   transition,
 } from "../db/drafts";
+import { linkMessage } from "../db/messageLinks";
 import { listMeetingsBetween, markMeetingSource, upsertMeeting } from "../db/meetings";
-import { getUserById, listContacts, saveContact, type User } from "../db/users";
+import { markSelfWrite } from "../db/selfWrites";
+import { getUserById, listContacts, modelOf, saveContact, type User } from "../db/users";
 import { Calendar, type GEvent } from "../google/calendar";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGoogleAuth } from "../google/oauth";
 import { eventToChange } from "../google/sync";
@@ -25,6 +27,7 @@ import { chatJson, type ContentPart } from "../llm/openrouter";
 import { cardForEdit, cardSystemPrompt, editSystemPrompt } from "../llm/prompts";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
+import { createZoomMeeting } from "../zoom/client";
 import {
   attendeesWithoutEmail,
   buildEventBody,
@@ -167,7 +170,7 @@ export async function parseDraft(env: Env, draftId: string, now = new Date()): P
   const user = await getUserById(env.db, draft.user_id);
   if (!user) return;
   const directory = await listContacts(env.db);
-  const raw = await chatJson(env, env.LLM_MODEL, [
+  const raw = await chatJson(env, modelOf(user, env.LLM_MODEL), [
     { role: "system", content: cardSystemPrompt(user, directory, now) },
     { role: "user", content: await buildUserContent(env, draft) },
   ]);
@@ -185,9 +188,9 @@ export async function editDraft(env: Env, draftId: string, instruction: string, 
   const user = await getUserById(env.db, draft.user_id);
   if (!user) return;
   const directory = await listContacts(env.db);
-  const raw = await chatJson(env, env.LLM_MODEL, [
+  const raw = await chatJson(env, modelOf(user, env.LLM_MODEL), [
     { role: "system", content: editSystemPrompt(user, directory, now) },
-    { role: "user", content: `Картка:\n${cardForEdit(draft.card)}\n\nПравка: ${instruction}` },
+    { role: "user", content: `Картка:\n${cardForEdit(draft.card as Card)}\n\nПравка: ${instruction}` },
   ]);
   const card = normalizeCard(raw, user, directory);
   // An edit never drops the card's confidence below the threshold; the question is still shown.
@@ -283,12 +286,29 @@ async function insertOrGet(cal: Calendar, body: Record<string, unknown>): Promis
 
 export async function createFromDraft(env: Env, user: User, draft: Draft, card: Card): Promise<GEvent> {
   const cal = new Calendar(env, user.id);
-  const body = { id: await eventIdForDraft(draft.id), ...buildEventBody(card, user, draft.id) };
+  const eventId = await eventIdForDraft(draft.id);
+
+  let zoomJoinUrl: string | undefined;
+  if (card.format === "zoom") {
+    const start = cardStart(card)!;
+    const zoom = await createZoomMeeting(env, {
+      topic: card.title ?? "Зустріч",
+      startIso: start.toISOString(),
+      durationMin: card.duration_min,
+      agenda: card.purpose ?? undefined,
+    });
+    zoomJoinUrl = zoom.join_url;
+  }
+
+  // Marked before the write so the push Google sends back for this very event is not treated as an
+  // externally-made change (see db/selfWrites.ts).
+  await markSelfWrite(env.db, eventId);
+  const body = { id: eventId, ...buildEventBody(card, user, draft.id, zoomJoinUrl) };
   const event = await insertOrGet(cal, body);
   const change = eventToChange(event);
   let meetingId: string | null = null;
   if (change.kind === "upsert") {
-    meetingId = await upsertMeeting(env.db, user.id, event.id, change.meeting, "bot");
+    meetingId = (await upsertMeeting(env.db, user.id, event.id, change.meeting, "bot")).id;
     // A push may have mirrored the event first, as "calendar".
     await markMeetingSource(env.db, meetingId, "bot");
   }
@@ -302,9 +322,12 @@ function createdHtml(card: Card, event: GEvent, now: Date): string {
   const start = cardStart(card)!;
   const lines = [`✅ <b>Зустріч створена</b>`, "", `<b>${esc(card.title)}</b>`, esc(formatRange(start, cardEnd(card)!, now))];
   if (card.format === "google_meet") lines.push(event.hangoutLink ? `Google Meet: ${esc(event.hangoutLink)}` : "Google Meet");
+  // For Zoom the join link was set as the event's location (see buildEventBody).
+  else if (card.format === "zoom") lines.push(event.location ? `Zoom: ${esc(event.location)}` : "Zoom");
   else if (card.location) lines.push(`📍 ${esc(card.location)}`);
   const invited = card.attendees.filter((a) => a.email);
   if (invited.length) lines.push("", `Запрошення надіслано на пошту: ${invited.map((a) => esc(a.name ?? a.email)).join(", ")}`);
+  lines.push("", "Відповідайте на це повідомлення, щоб перенести, скасувати чи дізнатись учасників.");
   return lines.join("\n");
 }
 
@@ -328,6 +351,7 @@ export async function handleCardCallback(
   }
 
   if (!draft.card) return "Картка ще готується";
+  const draftCard = draft.card as Card;
 
   if (action === "e") {
     if (!(await transition(env.db, draft.id, ["pending", "editing"], "editing"))) return "Картка вже неактуальна";
@@ -338,16 +362,16 @@ export async function handleCardCallback(
   }
 
   if (action.startsWith("s")) {
-    const slot = draft.card.slots?.[Number(action.slice(1))];
+    const slot = draftCard.slots?.[Number(action.slice(1))];
     const date = slot ? parseIsoWithOffset(slot) : null;
     if (!date || !["pending", "editing"].includes(draft.state)) return "Слот неактуальний";
-    const card: Card = { ...draft.card, start: slot!, date: null };
+    const card: Card = { ...draftCard, start: slot!, date: null };
     await presentCard(env, user, draft, card, now);
     return "Час обрано";
   }
 
   if (action === "c" || action === "w") {
-    let card = draft.card;
+    let card = draftCard;
     if (action === "w") {
       const dropped = new Set(attendeesWithoutEmail(card));
       card = {
@@ -368,8 +392,12 @@ export async function handleCardCallback(
     try {
       const event = await createFromDraft(env, user, { ...draft, card }, card);
       const keyboard: InlineKeyboard = event.htmlLink ? [[{ text: "📅 Відкрити в календарі", url: event.htmlLink }]] : [];
-      if (messageId) await tg.edit(user.tg_id, messageId, createdHtml(card, event, now), keyboard);
-      else await tg.send(user.tg_id, createdHtml(card, event, now), { keyboard });
+      const html = createdHtml(card, event, now);
+      let sentId = messageId;
+      if (sentId) await tg.edit(user.tg_id, sentId, html, keyboard);
+      else sentId = (await tg.send(user.tg_id, html, { keyboard })).message_id;
+      const created = await getDraft(env.db, draft.id);
+      if (created?.meeting_id) await linkMessage(env.db, sentId, "meeting", created.meeting_id);
       return "Створено";
     } catch (err) {
       await transition(env.db, draft.id, ["creating"], "pending");

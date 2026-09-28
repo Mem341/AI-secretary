@@ -1,11 +1,13 @@
 import { type Db, all, exec, one } from "./client";
 
-export type MeetingFormat = "offline" | "google_meet";
+export type MeetingFormat = "offline" | "google_meet" | "zoom";
 
 export interface UserDefaults {
   duration_min?: number;
   format?: MeetingFormat;
   address?: string;
+  /** OpenRouter model id for meeting cards, e.g. "openai/gpt-4o"; unset uses the deployment's LLM_MODEL. */
+  llm_model?: string;
 }
 
 /** The bot's owner (a single user, OWNER_TELEGRAM_ID). */
@@ -55,6 +57,11 @@ export function durationOf(user: User): number {
 
 export function formatOf(user: User): MeetingFormat {
   return user.defaults.format ?? "offline";
+}
+
+/** The OpenRouter model to use for this owner's meeting cards: their override, or the deployment's default. */
+export function modelOf(user: User, fallback: string): string {
+  return user.defaults.llm_model?.trim() || fallback;
 }
 
 export function firstName(user: User): string {

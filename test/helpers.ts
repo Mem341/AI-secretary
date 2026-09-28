@@ -23,6 +23,10 @@ export const testConfig: Config = {
   ELEVENLABS_API_KEY: "el-key",
   ENCRYPTION_KEY: "test-encryption-key",
   CRON_SECRET: "cron-secret",
+  ZOOM_ACCOUNT_ID: "",
+  ZOOM_CLIENT_ID: "",
+  ZOOM_CLIENT_SECRET: "",
+  GMAIL_PUBSUB_TOPIC: "",
 };
 
 /** Postgres in memory (PGlite) behind the app's Db interface; BIGINT parsed to number as in production. */

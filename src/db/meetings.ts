@@ -36,15 +36,15 @@ function fromRow(row: MeetingRow): Meeting {
   return { ...rest, attendees: JSON.parse(attendees_json) as MeetingAttendee[] };
 }
 
-/** Inserts or updates the mirror of a calendar event; returns the meeting id. */
+/** Inserts or updates the mirror of a calendar event; tells the caller whether this was a brand-new row. */
 export async function upsertMeeting(
   db: Db,
   userId: number,
   eventId: string,
   m: MeetingInput,
   source: "bot" | "calendar" = "calendar",
-): Promise<string> {
-  const row = await one<{ id: string }>(
+): Promise<{ id: string; inserted: boolean }> {
+  const row = await one<{ id: string; inserted: boolean }>(
     db,
     `INSERT INTO meetings (id, user_id, gcal_event_id, title, description, start_at, end_at, location, meet_url, html_link,
        attendees_json, organizer_email, status, source, gcal_created_at, created_at, updated_at)
@@ -54,7 +54,7 @@ export async function upsertMeeting(
        location = EXCLUDED.location, meet_url = EXCLUDED.meet_url, html_link = EXCLUDED.html_link,
        attendees_json = EXCLUDED.attendees_json, organizer_email = EXCLUDED.organizer_email, status = 'confirmed',
        gcal_created_at = COALESCE(meetings.gcal_created_at, EXCLUDED.gcal_created_at), updated_at = EXCLUDED.updated_at
-     RETURNING id`,
+     RETURNING id, (xmax = 0) AS inserted`,
     [
       randomId(),
       userId,
@@ -73,15 +73,46 @@ export async function upsertMeeting(
       Date.now(),
     ],
   );
-  return row!.id;
+  return row!;
 }
 
-export async function cancelMeetingByEvent(db: Db, userId: number, eventId: string): Promise<void> {
-  await exec(
-    db,
-    "UPDATE meetings SET status = 'cancelled', updated_at = $1 WHERE user_id = $2 AND gcal_event_id = $3 AND status <> 'cancelled'",
-    [Date.now(), userId, eventId],
+/** True when a confirmed meeting was actually cancelled (false if it was missing or already cancelled). */
+export async function cancelMeetingByEvent(db: Db, userId: number, eventId: string): Promise<boolean> {
+  return (
+    (await exec(
+      db,
+      "UPDATE meetings SET status = 'cancelled', updated_at = $1 WHERE user_id = $2 AND gcal_event_id = $3 AND status <> 'cancelled'",
+      [Date.now(), userId, eventId],
+    )) > 0
   );
+}
+
+export async function getMeetingByEvent(db: Db, userId: number, eventId: string): Promise<Meeting | null> {
+  const row = await one<MeetingRow>(db, "SELECT * FROM meetings WHERE user_id = $1 AND gcal_event_id = $2", [userId, eventId]);
+  return row && fromRow(row);
+}
+
+export async function getMeetingById(db: Db, id: string): Promise<Meeting | null> {
+  const row = await one<MeetingRow>(db, "SELECT * FROM meetings WHERE id = $1", [id]);
+  return row && fromRow(row);
+}
+
+/** After the bot itself reschedules or edits a meeting: refreshes the mirror ahead of the confirming push. */
+export async function updateMeetingFields(
+  db: Db,
+  id: string,
+  fields: Partial<Pick<Meeting, "start_at" | "end_at" | "description">>,
+): Promise<void> {
+  const cols: string[] = [];
+  const vals: unknown[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    vals.push(value);
+    cols.push(`${key} = $${vals.length}`);
+  }
+  if (!cols.length) return;
+  vals.push(Date.now(), id);
+  await exec(db, `UPDATE meetings SET ${cols.join(", ")}, updated_at = $${vals.length - 1} WHERE id = $${vals.length}`, vals);
 }
 
 /** After a full window sync: meetings in the window that Google no longer returns are cancelled. */

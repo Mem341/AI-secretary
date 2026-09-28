@@ -1,6 +1,6 @@
-import type { Env } from "../env";
-import { durationOf, formatOf, getUserById, type MeetingFormat, updateUser, type User } from "../db/users";
-import { connectLink, hasGoogleAuth } from "../google/oauth";
+import { type Env, zoomConfigured } from "../env";
+import { durationOf, formatOf, getUserById, type MeetingFormat, modelOf, updateUser, type User } from "../db/users";
+import { connectLink, hasGmailScope, hasGoogleAuth } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard, TgMessage } from "../telegram/types";
 
@@ -8,11 +8,13 @@ import type { InlineKeyboard, TgMessage } from "../telegram/types";
  * Dialog steps. "o_*" is the onboarding chain, "s_*" a single setting changed from /settings
  * (returns to the settings screen afterwards).
  */
-type Step = "name" | "position" | "phone" | "duration" | "format" | "address";
+type Step = "name" | "position" | "phone" | "duration" | "format" | "address" | "model";
 
 const OWNER_CHAIN: Step[] = ["name", "position", "phone", "duration", "format", "address"];
 
 const PHONE_RE = /^\+?[\d\s()-]{7,20}$/;
+/** OpenRouter model ids look like "vendor/model[:variant]" — a loose shape check, not a catalog lookup. */
+const MODEL_ID_RE = /^[a-z0-9_.-]+\/[a-z0-9_:.-]+$/i;
 
 type Mode = "o" | "s";
 
@@ -42,20 +44,29 @@ async function ask(env: Env, user: User, mode: Mode, step: Step): Promise<void> 
         keyboard: [[30, 45, 60, 90].map((m) => ({ text: `${m} хв`, callback_data: `o:dur:${m}` }))],
       });
       return;
-    case "format":
-      await tg.send(chat, "Формат зустрічі <b>за замовчуванням</b>:", {
-        keyboard: [
-          [
-            { text: "🏢 Офлайн", callback_data: "o:fmt:offline" },
-            { text: "💻 Google Meet", callback_data: "o:fmt:google_meet" },
-          ],
-        ],
-      });
+    case "format": {
+      const row = [
+        { text: "🏢 Офлайн", callback_data: "o:fmt:offline" },
+        { text: "💻 Google Meet", callback_data: "o:fmt:google_meet" },
+      ];
+      if (zoomConfigured(env)) row.push({ text: "🎥 Zoom", callback_data: "o:fmt:zoom" });
+      await tg.send(chat, "Формат зустрічі <b>за замовчуванням</b>:", { keyboard: [row] });
       return;
+    }
     case "address":
       await tg.send(chat, "Адреса для офлайн-зустрічей <b>за замовчуванням</b> (якщо місце не вказали в переписці):", {
         keyboard: [[{ text: "Пропустити", callback_data: "o:addr:skip" }]],
       });
+      return;
+    case "model":
+      await tg.send(
+        chat,
+        `Зараз картки зустрічей готує модель <code>${esc(modelOf(user, env.LLM_MODEL))}</code>.\n\n` +
+          "Напишіть ідентифікатор іншої моделі з OpenRouter (напр. <code>openai/gpt-5</code>) — я перемкнуся на неї. " +
+          "Список моделей: https://openrouter.ai/models\n\n" +
+          "⚠️ Для скріншотів переписки модель має підтримувати зображення (vision).",
+        { keyboard: [[{ text: "↩️ Типова модель", callback_data: "o:model:reset" }]] },
+      );
       return;
   }
 }
@@ -111,7 +122,8 @@ export async function startOnboarding(env: Env, user: User): Promise<void> {
   }
   await tg.send(
     user.tg_id,
-    "👋 Вітаю! Я ваш AI-секретар: створюю зустрічі з переписки чи голосового, надсилаю інвайти, нагадую і веду протоколи.\n\nНалаштуємо профіль — це кілька питань.",
+    "👋 Вітаю! Я ваш AI-секретар: створюю зустрічі з переписки чи голосового, надсилаю інвайти, нагадую, читаю пошту " +
+      "і веду протоколи.\n\nНалаштуємо профіль — це кілька питань.",
   );
   await ask(env, user, "o", "name");
 }
@@ -160,6 +172,15 @@ export async function handleDialogMessage(env: Env, user: User, msg: TgMessage):
       await updateUser(env.db, user.id, { defaults: { ...user.defaults, address: text } });
       break;
     }
+    case "model": {
+      if (!MODEL_ID_RE.test(text)) {
+        await tg.send(user.tg_id, "Формат ідентифікатора моделі: <code>вендор/модель</code>, напр. <code>openai/gpt-5</code>.");
+        return true;
+      }
+      await updateUser(env.db, user.id, { defaults: { ...user.defaults, llm_model: text } });
+      await tg.send(user.tg_id, `✅ Модель для карток зустрічей: <code>${esc(text)}</code>`, { removeKeyboard: true });
+      break;
+    }
     case "duration":
     case "format":
       await tg.send(user.tg_id, "Оберіть варіант кнопкою вище 👆");
@@ -180,18 +201,24 @@ export async function handleDialogCallback(env: Env, user: User, field: string, 
     return `${minutes} хв`;
   }
   if (field === "fmt") {
-    if (value !== "offline" && value !== "google_meet") return undefined;
+    if (value !== "offline" && value !== "google_meet" && value !== "zoom") return undefined;
+    if (value === "zoom" && !zoomConfigured(env)) return undefined;
     await updateUser(env.db, user.id, { defaults: { ...user.defaults, format: value as MeetingFormat } });
     if (state?.step === "format") await advance(env, user, state.mode, "format");
-    return value === "offline" ? "Офлайн" : "Google Meet";
+    return { offline: "Офлайн", google_meet: "Google Meet", zoom: "Zoom" }[value];
   }
   if (field === "addr" && value === "skip") {
     if (state?.step === "address") await advance(env, user, state.mode, "address");
     return "Пропущено";
   }
+  if (field === "model" && value === "reset") {
+    await updateUser(env.db, user.id, { defaults: { ...user.defaults, llm_model: undefined } });
+    if (state?.step === "model") await advance(env, user, state.mode, "model");
+    return `Типова: ${env.LLM_MODEL}`;
+  }
   if (field === "set") {
     const steps: Record<string, Step> = {
-      name: "name", position: "position", phone: "phone", duration: "duration", format: "format", address: "address",
+      name: "name", position: "position", phone: "phone", duration: "duration", format: "format", address: "address", model: "model",
     };
     const step = steps[value];
     if (step) await ask(env, user, "s", step);
@@ -200,9 +227,12 @@ export async function handleDialogCallback(env: Env, user: User, field: string, 
   return undefined;
 }
 
+const FORMAT_LABELS: Record<MeetingFormat, string> = { offline: "офлайн", google_meet: "Google Meet", zoom: "Zoom" };
+
 /** /settings */
 export async function showSettings(env: Env, user: User): Promise<void> {
   const connected = await hasGoogleAuth(env, user.id);
+  const gmail = connected && (await hasGmailScope(env, user.id));
   const lines = [
     "⚙️ <b>Налаштування</b>",
     "",
@@ -211,9 +241,11 @@ export async function showSettings(env: Env, user: User): Promise<void> {
     `Телефон: ${esc(user.phone ?? "—")}`,
     `Пошта (з Google): ${esc(user.email ?? "—")}`,
     `Тривалість за замовчуванням: ${durationOf(user)} хв`,
-    `Формат за замовчуванням: ${formatOf(user) === "google_meet" ? "Google Meet" : "офлайн"}`,
+    `Формат за замовчуванням: ${FORMAT_LABELS[formatOf(user)]}`,
     `Адреса за замовчуванням: ${esc(user.defaults.address ?? "—")}`,
+    `Модель для карток: ${esc(modelOf(user, env.LLM_MODEL))}${user.defaults.llm_model ? "" : " (типова)"}`,
     `Google Calendar: ${connected ? "✅ підключено" : "❌ не підключено"}`,
+    `Gmail: ${!connected ? "—" : gmail ? "✅ підключено" : "⚠️ потрібно перепідключити календар, щоб дати доступ"}`,
   ];
   const keyboard: InlineKeyboard = [
     [
@@ -226,6 +258,7 @@ export async function showSettings(env: Env, user: User): Promise<void> {
       { text: "Формат", callback_data: "o:set:format" },
       { text: "Адреса", callback_data: "o:set:address" },
     ],
+    [{ text: "Модель ШІ", callback_data: "o:set:model" }],
     [{ text: connected ? "🔄 Перепідключити календар" : "🔗 Підключити календар", url: await connectLink(env, user.id) }],
   ];
   await new Telegram(env).send(user.tg_id, lines.join("\n"), { keyboard });
@@ -238,12 +271,15 @@ export function helpText(): string {
     "📝 Напишіть, надиктуйте голосом, перешліть переписку або скиньте скріншот — я підготую картку зустрічі.",
     "Наприклад: <i>«зустріч з Іваном Петренком у четвер о 15:00 по бюджету Буковелю»</i>.",
     "✅ Після кнопки «Створити» подія зʼявиться в Google Calendar, а учасники отримають запрошення на пошту.",
-    "🔄 Зміни в календарі (зокрема зроблені вручну) я бачу автоматично.",
+    "🔄 Зміни в календарі (зокрема зроблені вручну) я бачу автоматично і одразу повідомляю.",
+    "💬 Відповідайте на моє повідомлення про зустріч, щоб перенести чи скасувати її, дізнатись учасників або додати нотатку.",
+    "📧 Пишіть щось на кшталт «перевір пошту» або «напиши Івану лист» — я також умію Gmail.",
     "📇 Імена та email учасників я запамʼятовую — наступного разу достатньо імені.",
     "",
     "/new — нова зустріч",
+    "/mail — дія з поштою",
     "/contacts — адресна книга; <code>/contact Імʼя Прізвище email</code> — додати",
-    "/settings — профіль, значення за замовчуванням, календар",
+    "/settings — профіль, значення за замовчуванням, календар, модель ШІ",
     "/cancel — скасувати поточну дію",
     "/help — ця довідка",
   ].join("\n");

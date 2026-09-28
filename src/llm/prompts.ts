@@ -8,7 +8,7 @@ const CARD_SCHEMA = `{
   "start": "YYYY-MM-DDTHH:MM:SS+HH:MM" | null,
   "date": "YYYY-MM-DD" | null,
   "duration_min": number | null,
-  "format": "offline" | "google_meet" | null,
+  "format": "offline" | "google_meet" | "zoom" | null,
   "location": string | null,
   "attendees": [{"name": string | null, "email": string | null, "internal": boolean}],
   "initiator": string | null,
@@ -47,8 +47,8 @@ const RULES = `Правила:
   для внутрішньої наради без зовнішніх людей — коротка тема.
 - "attendees": усі люди, з якими зустріч, КРІМ власника. Email — лише якщо він явно є в тексті або в адресній книзі.
   "internal": true — якщо це колега з компанії власника (та сама компанія / корпоративний домен пошти).
-- "format": "google_meet", якщо йдеться про онлайн/відеодзвінок/Meet/Zoom; "offline", якщо названо місце чи адресу;
-  інакше null.
+- "format": "zoom", якщо явно згадано Zoom/зум; "google_meet", якщо йдеться про онлайн/відеодзвінок/Meet без
+  згадки Zoom; "offline", якщо названо місце чи адресу; інакше null.
 - "location": адреса або назва місця так, як її вказали в тексті; для онлайн — null.
 - "initiator": хто запропонував зустріч; "purpose": з чим прийшов / мета одним реченням; "agenda": що хоче обговорити.
 - "agreed_via": месенджер/канал, де домовились (Telegram, Viber, WhatsApp, email, телефон) — якщо зрозуміло з контексту;

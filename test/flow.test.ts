@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { oauthCallback, oauthStart, telegramWebhook } from "../src/app";
+import type { Card } from "../src/bot/card";
 import type { Db } from "../src/db/client";
 import { getDraft } from "../src/db/drafts";
 import { getUserByTgId, listContacts } from "../src/db/users";
@@ -341,7 +342,7 @@ describe("meeting creation", () => {
     expect(editCall.messages[1]!.content).toContain("Правка: прибери Олега, зроби онлайн");
     const draft = await getDraft(env.db, draftId);
     expect(draft).toMatchObject({ state: "pending", edits_count: 1 });
-    expect(draft!.card!.format).toBe("google_meet");
+    expect((draft!.card as Card).format).toBe("google_meet");
     expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Google Meet");
   });
 
@@ -358,7 +359,7 @@ describe("meeting creation", () => {
 
     await handleUpdate(env, callbackUpdate(OWNER, slots[1]!.callback_data));
     const draft = await getDraft(env.db, slots[1]!.callback_data.split(":")[1]!);
-    expect(draft!.card!.start).toBeTruthy();
+    expect((draft!.card as Card).start).toBeTruthy();
     const after = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] })
       .inline_keyboard.flat();
     expect(after.some((b) => b.callback_data.endsWith(":c"))).toBe(true);
@@ -384,6 +385,102 @@ describe("meeting creation", () => {
     await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном завтра"));
     expect(jobs).toEqual([]);
     expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("підключіть Google Calendar");
+  });
+});
+
+describe("AI model setting", () => {
+  it("lets the owner pick a custom OpenRouter model and uses it for card parsing", async () => {
+    await seedConnectedOwner();
+    const calls = mockFetch([
+      (url) =>
+        url.hostname === "openrouter.ai"
+          ? llmReply({ title: "Тест", start: null, confidence: 0.9, attendees: [], agenda: [], missing: [] })
+          : undefined,
+    ]);
+    const { env, jobs } = testEnv(db);
+    await handleUpdate(env, textUpdate(OWNER, "/settings"));
+    const keyboard = (tgCalls(calls, "sendMessage").at(-1)!.reply_markup as any).inline_keyboard as { text: string; callback_data: string }[][];
+    const modelButton = keyboard.flat().find((b) => b.text === "Модель ШІ")!;
+    await handleUpdate(env, callbackUpdate(OWNER, modelButton.callback_data));
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("test/card-model");
+
+    await handleUpdate(env, textUpdate(OWNER, "не модель"));
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Формат ідентифікатора");
+
+    await handleUpdate(env, textUpdate(OWNER, "openai/gpt-5"));
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("openai/gpt-5");
+    expect((await getUserByTgId(env.db, OWNER))!.defaults.llm_model).toBe("openai/gpt-5");
+
+    await handleUpdate(env, textUpdate(OWNER, "зустріч з Іваном"));
+    await runJobs(env, jobs);
+    const llmCall = calls.find((c) => c.url.includes("openrouter.ai"))!.body as { model: string };
+    expect(llmCall.model).toBe("openai/gpt-5");
+  });
+
+  it("resets to the deployment default from the settings screen", async () => {
+    await seedConnectedOwner();
+    const calls = mockFetch([]);
+    const { env } = testEnv(db);
+    await handleUpdate(env, textUpdate(OWNER, "/settings"));
+    const keyboard = (tgCalls(calls, "sendMessage").at(-1)!.reply_markup as any).inline_keyboard as { text: string; callback_data: string }[][];
+    const modelButton = keyboard.flat().find((b) => b.text === "Модель ШІ")!;
+    await handleUpdate(env, callbackUpdate(OWNER, modelButton.callback_data));
+    const resetButton = (tgCalls(calls, "sendMessage").at(-1)!.reply_markup as any).inline_keyboard[0][0];
+    await handleUpdate(env, callbackUpdate(OWNER, resetButton.callback_data));
+    expect((await getUserByTgId(env.db, OWNER))!.defaults.llm_model).toBeUndefined();
+    expect(tgCalls(calls, "sendMessage").at(-1)!.text).toContain("Модель для карток: test/card-model (типова)");
+  });
+});
+
+describe("Zoom meetings", () => {
+  it("creates a Zoom meeting before the calendar event and puts the join link in the invite", async () => {
+    await seedConnectedOwner();
+    let zoomBody: any = null;
+    const calls = mockFetch([
+      (url) =>
+        url.hostname === "openrouter.ai"
+          ? llmReply({
+              title: "Іван Петренко + Олександр",
+              start: "2026-10-01T15:00:00+03:00",
+              format: "zoom",
+              attendees: [{ name: "Іван Петренко", email: "ivan@example.com" }],
+              agenda: [],
+              missing: [],
+              confidence: 0.9,
+            })
+          : undefined,
+      (url) => (url.hostname === "zoom.us" && url.pathname === "/oauth/token" ? Response.json({ access_token: "zt", expires_in: 3600 }) : undefined),
+      (url, init) => {
+        if (!(url.hostname === "api.zoom.us" && url.pathname === "/v2/users/me/meetings")) return undefined;
+        zoomBody = JSON.parse(init.bodyText);
+        return Response.json({ id: 123, join_url: "https://zoom.us/j/123" });
+      },
+      (url, init) => {
+        if (!(url.pathname.endsWith("/calendars/primary/events") && init.method === "POST")) return undefined;
+        const body = JSON.parse(init.bodyText);
+        return Response.json({ ...body, status: "confirmed", htmlLink: "https://calendar.google.com/e1" });
+      },
+    ]);
+    const { env, jobs } = testEnv(db);
+    env.ZOOM_ACCOUNT_ID = "zid";
+    env.ZOOM_CLIENT_ID = "zcid";
+    env.ZOOM_CLIENT_SECRET = "zsecret";
+
+    await handleUpdate(env, textUpdate(OWNER, "зум з Іваном завтра"));
+    await runJobs(env, jobs);
+    const keyboard = (tgCalls(calls, "editMessageText").at(-1)!.reply_markup as any).inline_keyboard as { callback_data: string }[][];
+    expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("Zoom");
+    const create = keyboard.flat().find((b) => b.callback_data.endsWith(":c"))!;
+
+    await handleUpdate(env, callbackUpdate(OWNER, create.callback_data));
+
+    expect(zoomBody.topic).toBe("Іван Петренко + Олександр");
+    const insertCall = calls.find((c) => c.method === "POST" && c.url.includes("/calendars/primary/events?"))!;
+    expect((insertCall.body as any).location).toBe("https://zoom.us/j/123");
+    expect(tgCalls(calls, "editMessageText").at(-1)!.text).toContain("https://zoom.us/j/123");
+
+    const { rows } = await db.query("SELECT 1 FROM recent_writes");
+    expect(rows.length).toBeGreaterThan(0);
   });
 });
 

@@ -3,7 +3,17 @@ import { type Env, googleConfigured, googleRedirectUri } from "../env";
 import { decrypt, encrypt, fromBase64Url, signToken, verifyToken } from "../lib/crypto";
 import { expectOk, fetchWithRetry, HttpError } from "../lib/http";
 
-export const GOOGLE_SCOPES = ["openid", "email", "https://www.googleapis.com/auth/calendar.events"];
+export const GOOGLE_SCOPES = [
+  "openid",
+  "email",
+  "https://www.googleapis.com/auth/calendar.events",
+  // Read/write/send Gmail except permanently deleting; plus managing label definitions.
+  // NOTE: these are Google "restricted" scopes. For a personal, self-hosted deployment (the owner is both the
+  // GCP project's developer and its only consenting user) that is fine, but an OAuth consent screen left in
+  // "Testing" caps refresh tokens at 7 days regardless of scope — see /api/setup for the trade-off.
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/gmail.labels",
+];
 const STATE_TTL_MS = 30 * 60_000;
 
 /** Thrown when the refresh token no longer works; the owner must reconnect the calendar. */
@@ -90,16 +100,18 @@ export async function completeAuth(env: Env, userId: number, code: string): Prom
   const now = Date.now();
   await exec(
     env.db,
-    `INSERT INTO google_auth (user_id, google_email, refresh_token_enc, access_token, expires_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO google_auth (user_id, google_email, refresh_token_enc, access_token, expires_at, granted_scope, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (user_id) DO UPDATE SET google_email = EXCLUDED.google_email, refresh_token_enc = EXCLUDED.refresh_token_enc,
-       access_token = EXCLUDED.access_token, expires_at = EXCLUDED.expires_at, updated_at = EXCLUDED.updated_at`,
+       access_token = EXCLUDED.access_token, expires_at = EXCLUDED.expires_at, granted_scope = EXCLUDED.granted_scope,
+       updated_at = EXCLUDED.updated_at`,
     [
       userId,
       email,
       await encrypt(env.ENCRYPTION_KEY, tokens.refresh_token),
       await encrypt(env.ENCRYPTION_KEY, tokens.access_token),
       now + tokens.expires_in * 1000,
+      tokens.scope ?? "",
       now,
     ],
   );
@@ -108,6 +120,14 @@ export async function completeAuth(env: Env, userId: number, code: string): Prom
 
 export async function hasGoogleAuth(env: Env, userId: number): Promise<boolean> {
   return !!(await one(env.db, "SELECT 1 FROM google_auth WHERE user_id = $1", [userId]));
+}
+
+/** Whether the owner's current Google grant includes Gmail access (they may have connected before it existed). */
+export async function hasGmailScope(env: Env, userId: number): Promise<boolean> {
+  const row = await one<{ granted_scope: string | null }>(env.db, "SELECT granted_scope FROM google_auth WHERE user_id = $1", [
+    userId,
+  ]);
+  return !!row?.granted_scope?.includes("gmail.modify");
 }
 
 /** Returns a valid access token, refreshing it when it expires within a minute. */
