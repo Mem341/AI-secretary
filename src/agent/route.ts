@@ -20,12 +20,17 @@ const MAIL = [
 
 const matches = (patterns: RegExp[], text: string) => patterns.some((p) => p.test(text));
 
-export function routeByKeywords(input: AgentInput): "calendar_agent" | "gmail_agent" | null {
+const TASKS = [/задач|задан|таск|\btask|бітрікс|битрикс|bitrix|дедлайн|доручен|поручен|прострочен|просрочен/];
+
+export function routeByKeywords(input: AgentInput, bitrix = false): "calendar_agent" | "gmail_agent" | "bitrix_agent" | null {
   // A reply to the bot's own notice names its subject exactly.
   if (input.replyRef?.startsWith("eventId:")) return "calendar_agent";
   if (input.replyRef?.startsWith("messageId:")) return "gmail_agent";
+  if (input.replyRef?.startsWith("taskId:")) return bitrix ? "bitrix_agent" : null;
   if (input.inputType === "forward" || input.images?.length) return null;
   const text = input.text.toLowerCase();
+  // A task is often about a day ("задача на завтра") or a person to write to: task words decide first.
+  if (bitrix && matches(TASKS, text)) return matches(MAIL.slice(0, 1), text) ? null : "bitrix_agent";
   const calendar = matches(CALENDAR, text);
   const mail = matches(MAIL, text);
   if (calendar === mail) return null;

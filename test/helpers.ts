@@ -33,6 +33,7 @@ export const testConfig: Config = {
   ZOOM_ACCOUNT_ID: "",
   ZOOM_CLIENT_ID: "",
   ZOOM_CLIENT_SECRET: "",
+  BITRIX_WEBHOOK_URL: "",
   GMAIL_PUBSUB_TOPIC: "",
   OWNER_NAME: "",
   OWNER_POSITION: "Директор з розвитку",

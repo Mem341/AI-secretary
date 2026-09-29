@@ -1,4 +1,4 @@
-import { type Env, gmailPushConfigured, zoomConfigured } from "../env";
+import { bitrixConfigured, type Env, gmailPushConfigured, zoomConfigured } from "../env";
 import { gmailPushEndpoint } from "../google/gmailPush";
 import { connectLink, hasGmailScope, hasGoogleAuth, loadOwnerSettings, type OwnerSettings, saveOwnerSettings } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
@@ -50,6 +50,7 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   connected.push(line(true, "Голосові повідомлення"));
   (gmailPushConfigured(env) ? connected : available).push(line(gmailPushConfigured(env), "Миттєві сповіщення про нові листи"));
   (zoomConfigured(env) ? connected : available).push(line(zoomConfigured(env), "Zoom — зустрічі в Zoom"));
+  (bitrixConfigured(env) ? connected : available).push(line(bitrixConfigured(env), "Bitrix24 — задачі (/bitrix)"));
 
   const html = [
     "⚙️ <b>Налаштування</b>",

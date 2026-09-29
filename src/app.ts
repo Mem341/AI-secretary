@@ -231,6 +231,7 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
 const BOT_COMMANDS = [
   { command: "start", description: "Почати / підключити Google" },
   { command: "settings", description: "Налаштування" },
+  { command: "bitrix", description: "Задачі Bitrix24" },
   { command: "reset", description: "Почати розмову заново" },
   { command: "help", description: "Що вміє бот" },
 ];

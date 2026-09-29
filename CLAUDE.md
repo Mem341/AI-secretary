@@ -35,9 +35,14 @@ webhook and redirects to the bot; `/api/health` shows the state.
   voice → `LLM_MODEL` (gpt-6-luna-pro); a `ModelError` before any write tool ran retries the request on `LLM_MODEL`,
   never after a write. `npm run eval:models` (`eval/`, real OpenRouter, fake tools) compares models on typical
   requests. Keep prompts and tool names in line with the n8n originals.
+- `src/bitrix/` — optional Bitrix24 tasks via an incoming webhook (`BITRIX_WEBHOOK_URL`): `client.ts` (REST; tasks
+  are only read, commented and created — never closed, changed or deleted; keep it that way), `names.ts` (people by
+  name in any case form / alphabet), `report.ts` (Excel: tasks, stage, status, state from comments by AI, analytics),
+  `menu.ts` (/bitrix buttons `bx:…`, no AI). The `bitrix_agent` (`agent/bitrixTools.ts`, `bitrixPrompt`) joins the
+  Supervisor and `route.ts` when it is configured. `lib/xlsx.ts` writes .xlsx without dependencies.
 - `src/bot/` — `onboarding.ts` (/start, /help), `settings.ts` (/settings: what is connected, reminder times and the
   morning list chosen with `set:…` buttons, no AI), `owner.ts` (profile from Telegram/Google/env),
-  `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /reset /help; everything else
+  `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /bitrix /reset /help; everything else
   goes to the agents.
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
   format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest,

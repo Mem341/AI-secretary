@@ -26,6 +26,8 @@
   створіть топік, дайте `gmail-api-push@system.gserviceaccount.com` роль **Pub/Sub Publisher**, задайте
   `GMAIL_PUBSUB_TOPIC` = `projects/<project-id>/topics/<назва>`, у боті /settings → «📧 Адреса для сповіщень про листи»
   → створіть Push-підписку на цю адресу → перепідключіть Google;
+- **Bitrix24** — задачі: у Bitrix24 → Розробникам → Інше → **Вхідний вебхук**, права «Задачі» та «Користувачі»;
+  адресу вебхука вставте в `BITRIX_WEBHOOK_URL`;
 - `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `AGENT_MODEL`, `VISION_MODEL`, `LLM_MODEL`;
 - нагадування за 30 і за 10 хв до зустрічі — потрібен виклик кожні 5 хв з cron-job.org (див. README → «Нагадування»); ранковий список зустрічей працює й так.
 
