@@ -164,3 +164,27 @@ describe("Google as the bot's clock (no cron, no outside service)", () => {
     expect(trashed).toBe(true);
   });
 });
+
+describe("reminder emails in any language of the calendar", () => {
+  it("recognises Ukrainian and Russian subjects too (a Cyrillic word has no \\b boundary in JS)", async () => {
+    const { handleReminderEmail } = await import("../src/google/reminders");
+    mockFetch([(url) => (url.hostname === "www.googleapis.com" || url.hostname === "gmail.googleapis.com" ? Response.json({}) : undefined)]);
+    const { env } = testEnv();
+    await connectGoogle();
+    const mail = (subject: string) =>
+      ({
+        id: "m",
+        threadId: "t",
+        payload: {
+          headers: [
+            { name: "From", value: "Google Календар <calendar-notification@google.com>" },
+            { name: "Subject", value: subject },
+          ],
+          body: { data: Buffer.from(`https://calendar.google.com/calendar/event?action=VIEW&eid=${Buffer.from("e1 a@b.c").toString("base64url")}`).toString("base64url") },
+        },
+      }) as never;
+    expect(await handleReminderEmail(env, mail("Нагадування: Стендап @ вт 29 вер. 2026"))).toBe(true);
+    expect(await handleReminderEmail(env, mail("Уведомление: Стендап @ вт 29 сент. 2026"))).toBe(true);
+    expect(await handleReminderEmail(env, mail("Запрошення: Стендап"))).toBe(false);
+  });
+});

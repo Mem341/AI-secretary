@@ -74,8 +74,11 @@ webhook and redirects to the bot; `/api/health` shows the state.
   If-Match on the event's etag before a notice or reminder is sent (`claimPrivate`): parallel copies of the bot
   handling the same push race there and only one sends. Gmail: a hidden label marks reported emails.
 - The agents' chat memory (`agent/memory.ts`, the owner asked for it): ONE file, memory.json, in the bot's hidden
-  Drive folder (`google/drive.ts`, scope `drive.appdata`): per-agent threads of the last 20/50/100 messages (owner's
-  choice, `OwnerSettings.m`), the model gets the last `SEND`; plus facts the agents save with `remember_fact`.
+  Drive folder (`google/drive.ts`, scope `drive.appdata`): ONE log shared by all agents, the last 20/50/100 messages
+  (owner's choice, `OwnerSettings.m`); plus facts the agents save with `remember_fact`. The model sees the recent log
+  ONLY as a reference block in the system prompt (`conversationBlock`, marked «do not carry out again»), never as
+  earlier user turns — old requests must not be re-run. `delete_event` refuses unless the CURRENT message asks
+  (`deletionAllowed`); several / «all» only after «так». In JS regexes `\b` does not work next to Cyrillic letters.
   Loaded at the start of an agent request, written after the answer. Without the Drive scope it stays in the instance.
 - Bursts of forwarded messages (`session.ts`): in memory, self-expiring; losing it may cost a duplicate, never data.
   Do not add a database or any other store.

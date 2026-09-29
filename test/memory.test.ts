@@ -64,8 +64,7 @@ describe("conversation memory in the hidden Drive folder", () => {
     restart();
     await handleUpdate(env, say("дякую"));
     await runJobs(env, jobs);
-    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
-    expect(seen[1]!.messages[2]!.content).toBe("Привіт! Чим допомогти?");
+    expect(String(seen[1]!.messages[0]!.content)).toContain("Бот: Привіт! Чим допомогти?");
   });
 
   it("keeps the last N messages the owner chose; the oldest drop out", async () => {
@@ -78,10 +77,10 @@ describe("conversation memory in the hidden Drive folder", () => {
       await handleUpdate(env, say(`повідомлення ${i}`));
       await runJobs(env, jobs);
     }
-    const thread = drive.json().threads[`supervisor:${OWNER}`] as { content: string }[];
-    expect(thread).toHaveLength(20);
-    expect(thread[0]!.content).toContain("повідомлення 3");
-    expect(thread.at(-2)!.content).toContain("повідомлення 12");
+    const log = drive.json().log as { who: string; text: string }[];
+    expect(log).toHaveLength(20);
+    expect(log[0]).toMatchObject({ who: "u", text: "повідомлення 3" });
+    expect(log.at(-2)).toMatchObject({ who: "u", text: "повідомлення 12" });
   });
 
   it("facts the agent writes stay after /reset and go into the next prompt", async () => {
@@ -100,7 +99,7 @@ describe("conversation memory in the hidden Drive folder", () => {
 
     restart();
     await handleUpdate(env, say("/reset"));
-    expect(drive.json().threads).toEqual({});
+    expect(drive.json().log).toEqual([]);
     await handleUpdate(env, say("привіт"));
     await runJobs(env, jobs);
     expect(String(seen.at(-1)!.messages[0]!.content)).toContain("Іван Петренко — ivan@acme.ua");
@@ -132,5 +131,57 @@ describe("conversation memory in the hidden Drive folder", () => {
     await handleUpdate(env, say("/settings"));
     await handleUpdate(env, press("set:mem", lastBotMessage("Налаштування")));
     expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("Перепідключіть Google");
+  });
+});
+
+describe("old requests in the memory are never carried out again", () => {
+  it("«видали всі зустрічі» said earlier + «йому» now → nothing is deleted", async () => {
+    await connectGoogle({ scope: DRIVE_SCOPE });
+    const drive = fakeDrive();
+    let deletes = 0;
+    const toolResults: string[] = [];
+    let step = 0;
+    mockFetch([
+      drive.route,
+      (url, init) => {
+        if (url.hostname !== "www.googleapis.com" || !url.pathname.startsWith("/calendar/")) return undefined;
+        if (init.method === "DELETE") {
+          deletes++;
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ id: "ev1", items: [] });
+      },
+      openRouter((req) => {
+        const last = req.messages.at(-1)!;
+        if (last.role === "tool") {
+          toolResults.push(String(last.content));
+          return llmText("Кому саме написати?");
+        }
+        step++;
+        // A confused model tries to act on the old request.
+        return step === 1 ? llmTools(["calendar_agent", { prompt: "йому" }]) : llmTools(["delete_event", { eventId: "ev1" }]);
+      }),
+    ]);
+    const { env, jobs } = testEnv();
+    // Earlier in the conversation:
+    const { loadMemory, rememberTurn, saveMemory } = await import("../src/agent/memory");
+    await loadMemory(env);
+    await rememberTurn(env, "удали все встречи на сегодня", "Видалив 2 зустрічі.");
+    await saveMemory(env);
+
+    await handleUpdate(env, say("йому"));
+    await runJobs(env, jobs);
+    expect(deletes).toBe(0);
+    expect(toolResults.some((r) => r.includes("does not ask to delete"))).toBe(true);
+  });
+
+  it("the deletion rule: this message must ask; several or «all» only after «так»", async () => {
+    const { deletionAllowed } = await import("../src/agent/calendarTools");
+    expect(deletionAllowed("йому", 0)).toMatch(/does not ask/);
+    expect(deletionAllowed("видали стендап", 0)).toBeNull();
+    expect(deletionAllowed("видали стендап", 1)).toMatch(/confirmation/);
+    expect(deletionAllowed("удали все встречи на сегодня", 0)).toMatch(/confirmation/);
+    expect(deletionAllowed("так", 0)).toBeNull();
+    expect(deletionAllowed("так", 3)).toBeNull();
   });
 });

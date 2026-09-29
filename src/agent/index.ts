@@ -8,7 +8,7 @@ import { esc, Telegram } from "../telegram/api";
 import { calendarTools } from "./calendarTools";
 import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
-import { factsBlock, history, loadMemory, memoryTools, remember, saveMemory } from "./memory";
+import { conversationBlock, factsBlock, loadMemory, memoryTools, rememberTurn, saveMemory } from "./memory";
 import { bitrixPrompt, calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
 import { bitrixTools } from "./bitrixTools";
 import { routeByKeywords } from "./route";
@@ -88,13 +88,12 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
     const answer = await runAgent(env, {
       model: ctx.model,
       onTool: tracking(ctx),
-      system: bitrixPrompt(await loadOwner(env), now) + factsBlock(),
-      history: history(memoryKey),
+      system: bitrixPrompt(await loadOwner(env), now) + factsBlock() + conversationBlock(),
+      history: [],
       input: withImages(userMessage, input.images),
       tools: [...bitrixTools(env), ...memoryTools],
       maxIterations: 12,
     });
-    await remember(env, memoryKey, userMessage, answer);
     return answer;
   }
   if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
@@ -108,22 +107,21 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
       ? await runAgent(env, {
           model: ctx.model,
           onTool: tracking(ctx),
-          system: calendarPrompt(owner, await loadDirectory(env), now) + factsBlock(),
-          history: history(memoryKey),
+          system: calendarPrompt(owner, await loadDirectory(env), now) + factsBlock() + conversationBlock(),
+          history: [],
           input: withImages(userMessage, input.images),
-          tools: [...calendarTools(env, owner.email), ...memoryTools],
+          tools: [...calendarTools(env, owner.email, { currentText: input.text }), ...memoryTools],
           maxIterations: 10,
         })
       : await runAgent(env, {
           model: ctx.model,
           onTool: tracking(ctx),
-          system: gmailPrompt() + factsBlock(),
-          history: history(memoryKey),
+          system: gmailPrompt() + factsBlock() + conversationBlock(),
+          history: [],
           input: withImages(userMessage, input.images),
           tools: [...gmailTools(env), ...memoryTools],
           maxIterations: 10,
         });
-  await remember(env, memoryKey, userMessage, answer);
   return answer;
 }
 
@@ -141,7 +139,6 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
   const direct = routeByKeywords(input, bitrixConfigured(env));
   if (direct) {
     const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
-    await remember(env, `supervisor:${key}`, chatInput, output);
     return output;
   }
 
@@ -162,8 +159,8 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
 
   const output = await runAgent(env, {
     model: ctx.model,
-    system: supervisorPrompt(bitrixConfigured(env)) + factsBlock(),
-    history: history(`supervisor:${key}`),
+    system: supervisorPrompt(bitrixConfigured(env)) + factsBlock() + conversationBlock(),
+    history: [],
     input: withImages(chatInput, input.images),
     tools: [
       subAgent(
@@ -184,7 +181,6 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
     maxIterations: 15,
     temperature: 0.2,
   });
-  await remember(env, `supervisor:${key}`, chatInput, output);
   return output;
 }
 
@@ -192,12 +188,22 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
  * ✅ Прийняти / ❌ Відхилити under an invitation: the n8n Calendar Agent's rule ("accept:{eventId} → RSVP tool") done
  * in code — same tool, same answer, no model call.
  */
-async function answerInvitation(env: Env, accept: boolean, eventId: string): Promise<string> {
-  if (!(await hasGoogleAuth(env))) return `Google не підключено: ${await connectLink(env)}`;
+async function answerInvitation(env: Env, accept: boolean, eventId: string): Promise<{ answer: string; note: string }> {
+  if (!(await hasGoogleAuth(env))) return { answer: `Google не підключено: ${await connectLink(env)}`, note: "" };
   const owner = await loadOwner(env);
-  const tool = calendarTools(env, owner.email).find((t) => t.spec.name === "rsvp_event")!;
-  await tool.run({ eventId, responseStatus: accept ? "accepted" : "declined" });
-  return accept ? "✅ Зустріч підтверджена!" : "❌ Зустріч відхилена!";
+  const tools = calendarTools(env, owner.email);
+  await tools.find((t) => t.spec.name === "rsvp_event")!.run({ eventId, responseStatus: accept ? "accepted" : "declined" });
+  // Who and what, for the answer and for the conversation log (so «напиши йому» knows who «він» is).
+  const ev = (await tools.find((t) => t.spec.name === "get_event")!.run({ eventId }).catch(() => ({}))) as {
+    summary?: string;
+    organizer?: { email?: string; displayName?: string };
+  };
+  const title = ev.summary ? ` «${esc(ev.summary)}»` : "";
+  const org = ev.organizer?.email ? `${ev.organizer.displayName ? `${ev.organizer.displayName} ` : ""}<${ev.organizer.email}>` : "";
+  return {
+    answer: `${accept ? "✅ Зустріч" : "❌ Зустріч"}${title} ${accept ? "підтверджена" : "відхилена"}!${org ? `\n👤 Організатор: ${esc(org)}` : ""}`,
+    note: `[Натиснув «${accept ? "Прийняти" : "Відхилити"}» під запрошенням${ev.summary ? ` «${ev.summary}»` : ""}${org ? ` від ${org}` : ""} (eventId: ${eventId})]`,
+  };
 }
 
 /**
@@ -219,8 +225,17 @@ export async function runWithFallback(env: Env, input: AgentInput): Promise<stri
 export async function handleWithAgents(env: Env, input: AgentInput): Promise<void> {
   const tg = new Telegram(env);
   const rsvp = /^(accept|decline):(.+)$/.exec(input.callbackData ?? "");
-  if (!rsvp) await loadMemory(env);
-  const output = rsvp ? await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!) : await runWithFallback(env, input);
+  await loadMemory(env);
+  let output: string;
+  if (rsvp) {
+    const done = await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!);
+    output = done.answer;
+    await rememberTurn(env, done.note, output);
+  } else {
+    output = await runWithFallback(env, input);
+    const about = input.replyText ? ` (у відповідь на: «${input.replyText.replace(/\s+/g, " ").slice(0, 120)}»)` : "";
+    await rememberTurn(env, `${input.text}${about}`, output);
+  }
   const html = toTelegramHtml(output);
   await tg.send(input.chatId, html).catch(async (err) => {
     // Telegram rejected the markup (e.g. a broken link): the same answer as plain text.
@@ -229,7 +244,7 @@ export async function handleWithAgents(env: Env, input: AgentInput): Promise<voi
     await tg.send(input.chatId, esc(plain));
   });
   // Memory goes back to Drive after the owner already has the answer.
-  if (!rsvp) await saveMemory(env);
+  await saveMemory(env);
   if (input.callbackId) {
     await tg.call("answerCallbackQuery", { callback_query_id: input.callbackId, text: "✅" }).catch(() => undefined);
     if (input.callbackMessageId) {
