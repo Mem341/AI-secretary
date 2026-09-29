@@ -23,7 +23,7 @@
 - **Zoom** — зустрічі в Zoom замість Google Meet: Account ID, Client ID і Client Secret застосунку
   Server-to-Server OAuth ([Zoom Marketplace](https://marketplace.zoom.us/develop/create), scope `meeting:write:admin`);
 - миттєві сповіщення про нові листи (Cloud Pub/Sub) — кроки на сторінці `/api/setup`;
-- `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `LLM_MODEL` і `AGENT_MODEL`;
+- `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `AGENT_MODEL`, `VISION_MODEL`, `LLM_MODEL`;
 - нагадування за 30 і за 10 хв до зустрічі — потрібен виклик кожні 5 хв з cron-job.org (див. README → «Нагадування»); ранковий список зустрічей працює й так.
 
 ---

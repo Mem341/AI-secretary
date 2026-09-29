@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseAttendees } from "../src/agent/calendarTools";
 import { gmailTools } from "../src/agent/gmailTools";
 import { toTelegramHtml } from "../src/agent/html";
-import { runAgent, type Tool } from "../src/agent/runner";
+import { ModelError, runAgent, type Tool } from "../src/agent/runner";
 import { newMailNotice } from "../src/google/gmailPush";
 import { fromBase64Url } from "../src/lib/crypto";
 import { connectGoogle, type LlmRequest, llmText, llmTools, mockFetch, openRouter, resetInstance, testEnv } from "./helpers";
@@ -49,9 +49,10 @@ describe("agent loop", () => {
     mockFetch([openRouter(() => llmTools(["echo", {}]), seen)]);
     const { env } = testEnv();
     const echo: Tool = { spec: { name: "echo", description: "", parameters: {} }, run: async () => "ok" };
-    const out = await runAgent(env, { model: "m", system: "s", history: [], input: "hi", tools: [echo], maxIterations: 3 });
+    await expect(runAgent(env, { model: "m", system: "s", history: [], input: "hi", tools: [echo], maxIterations: 3 })).rejects.toBeInstanceOf(
+      ModelError,
+    );
     expect(seen).toHaveLength(3);
-    expect(out).toContain("Не вдалося");
   });
 });
 

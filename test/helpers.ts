@@ -16,8 +16,9 @@ export const OWNER = 1000;
 export const testConfig: Config = {
   OWNER_TELEGRAM_ID: OWNER,
   PUBLIC_URL: "https://bot.test",
-  LLM_MODEL: "test/supervisor-model",
+  LLM_MODEL: "test/strong-model",
   AGENT_MODEL: "test/agent-model",
+  VISION_MODEL: "test/vision-model",
   LLM_MODEL_SUMMARY: "test/summary-model",
   STT_MODEL: "test/audio-model",
   REMINDER_MINUTES: [30, 10],
@@ -244,6 +245,9 @@ export function llmTools(...calls: [string, Record<string, unknown>][]): Respons
     ],
   });
 }
+
+/** The Supervisor's request: its tools are the two agents. */
+export const isSupervisor = (req: LlmRequest) => !!req.tools?.some((t) => t.function.name === "calendar_agent");
 
 export interface LlmRequest {
   model: string;

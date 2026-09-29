@@ -10,6 +10,7 @@ import {
   calendarList,
   connectGoogle,
   lastBotMessage,
+  isSupervisor,
   lastContent,
   type LlmRequest,
   llmText,
@@ -169,7 +170,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
         return Response.json({ items: [] });
       },
       openRouter((req) => {
-        if (req.model === "test/supervisor-model") {
+        if (isSupervisor(req)) {
           return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
         }
         return req.messages.at(-1)!.role === "tool"
@@ -197,7 +198,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     mockFetch([
       calendarList([]),
       openRouter((req) => {
-        if (req.model === "test/supervisor-model") {
+        if (isSupervisor(req)) {
           return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
         }
         return llmText("Готово");
@@ -206,7 +207,8 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "перенеси зустріч з Іваном і напиши йому лист"));
     await runJobs(env, jobs);
-    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/agent-model", "test/supervisor-model"]);
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model", "test/agent-model", "test/agent-model"]);
+    expect(seen.map(isSupervisor)).toEqual([true, false, true]);
     expect(lastContent(seen[0]!)).toContain("USER: перенеси зустріч з Іваном і напиши йому лист");
     expect(lastContent(seen[0]!)).toContain("---SESSION---");
     expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent"]);
@@ -226,7 +228,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
         return Response.json({ id: "ev1", status: "confirmed", hangoutLink: "https://meet.google.com/abc", organizer: { self: true } });
       },
       openRouter((req) => {
-        if (req.model === "test/supervisor-model") {
+        if (isSupervisor(req)) {
           return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
         }
         return req.messages.at(-1)!.role === "tool"
@@ -283,7 +285,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
         });
       },
       openRouter((req) => {
-        if (req.model === "test/supervisor-model") {
+        if (isSupervisor(req)) {
           return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
         }
         return req.messages.at(-1)!.role === "tool" ? llmText("✅ Зустріч підтверджена!") : llmTools(["rsvp_event", { eventId: "ev7", responseStatus: "accepted" }]);
@@ -367,7 +369,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
         return Response.json({ id: "ev5", extendedProperties: { private: { aisStart: "1" } } });
       },
       openRouter((req) => {
-        if (req.model === "test/supervisor-model") {
+        if (isSupervisor(req)) {
           return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
         }
         return req.messages.at(-1)!.role === "tool" ? llmText("🗑 Видалено") : llmTools(["delete_event", { eventId: "ev5" }]);
@@ -415,6 +417,58 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
   });
 });
 
+describe("which model serves a request", () => {
+  it("text → AGENT_MODEL, pictures → VISION_MODEL", async () => {
+    const seen: LlmRequest[] = [];
+    mockFetch([openRouter(() => llmText("ok"), seen)]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "привіт"));
+    await handleUpdate(env, textUpdate(OWNER, "", { text: undefined, caption: "що тут?", photo: [{ file_id: "p", file_unique_id: "u", width: 1, height: 1 }] }));
+    await runJobs(env, jobs);
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model", "test/vision-model"]);
+  });
+
+  it("when the cheap model fails before changing anything, the request is retried on LLM_MODEL", async () => {
+    const seen: LlmRequest[] = [];
+    const calls = mockFetch([
+      openRouter((req) => (req.model === "test/agent-model" ? Response.json({ error: { message: "bad tool call" } }, { status: 400 }) : llmText("Привіт!")), seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "привіт"));
+    await runJobs(env, jobs);
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model", "test/strong-model"]);
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("Привіт!");
+  });
+
+  it("after a change (an event deleted) a failure is not retried, so nothing is done twice", async () => {
+    await connectGoogle();
+    const seen: LlmRequest[] = [];
+    let deletes = 0;
+    mockFetch([
+      calendarList([]),
+      (url, init) => {
+        if (url.pathname !== "/calendar/v3/calendars/primary/events/ev5") return undefined;
+        if (init.method === "DELETE") {
+          deletes++;
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ id: "ev5" });
+      },
+      openRouter((req) =>
+        req.messages.at(-1)!.role === "tool"
+          ? Response.json({ error: { message: "overloaded" } }, { status: 400 })
+          : llmTools(["delete_event", { eventId: "ev5" }]),
+      seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "видали зустріч"));
+    await runJobs(env, jobs);
+    expect(deletes).toBe(1);
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model", "test/agent-model"]);
+    expect(lastBotMessage("Не вдалося обробити запит")).toBeTruthy();
+  });
+});
+
 describe("voice", () => {
   it("transcribes through OpenRouter, shows the text and hands it to the agents", async () => {
     let audio: { data: string; format: string } | undefined;
@@ -436,6 +490,8 @@ describe("voice", () => {
     expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
     expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>привіт, як справи</i>"))).toBe(true);
     expect(lastContent(seen[0]!)).toContain("USER: привіт, як справи");
+    // Spoken requests go to the strong model.
+    expect(seen[0]!.model).toBe("test/strong-model");
     expect(lastContent(seen[0]!)).toContain("inputType: voice");
   });
 });

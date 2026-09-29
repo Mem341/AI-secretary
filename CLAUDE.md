@@ -29,7 +29,10 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
   `route.ts` (the Supervisor's keyword routing table in code: an obvious calendar/mail request, or a reply to the
   bot's notice, goes straight to its agent; anything unclear goes to the Supervisor). No Think tool. ✅ / ❌ under an
   invitation (`accept:` / `decline:`) is answered in code with the same RSVP tool, no model call.
-  Supervisor = `LLM_MODEL`, sub-agents = `AGENT_MODEL` (defaults to `LLM_MODEL`, i.e. `openai/gpt-6-luna-pro` everywhere). Keep prompts and tool names in line with the n8n originals.
+  Models per request (`modelFor`): text → `AGENT_MODEL` (gpt-oss-120b), pictures → `VISION_MODEL` (qwen3.7-flash),
+  voice → `LLM_MODEL` (gpt-6-luna-pro); a `ModelError` before any write tool ran retries the request on `LLM_MODEL`,
+  never after a write. `npm run eval:models` (`eval/`, real OpenRouter, fake tools) compares models on typical
+  requests. Keep prompts and tool names in line with the n8n originals.
 - `src/bot/` — `onboarding.ts` (/start, /help), `settings.ts` (/settings: what is connected, reminder times and the
   morning list chosen with `set:…` buttons, no AI), `owner.ts` (profile from Telegram/Google/env),
   `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /reset /help; everything else

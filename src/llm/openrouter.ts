@@ -78,6 +78,13 @@ export type AgentMessage =
   | { role: "assistant"; content: string | null; tool_calls: ToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 
+/** Tokens (and, when OpenRouter reports it, the cost in USD) of one model call. */
+export interface TokenUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cost?: number;
+}
+
 export interface ToolSpec {
   name: string;
   description: string;
@@ -92,7 +99,7 @@ export async function chatWithTools(
   messages: AgentMessage[],
   tools: ToolSpec[],
   temperature?: number,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; usage?: TokenUsage }> {
   const res = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -106,14 +113,17 @@ export async function chatWithTools(
       messages,
       ...(tools.length ? { tools: tools.map((t) => ({ type: "function", function: t })) } : {}),
       ...(temperature === undefined ? {} : { temperature }),
+      // gpt-oss reasons before answering; a short think is enough for a calendar request and keeps replies fast.
+      ...(model.includes("gpt-oss") ? { reasoning: { effort: "low" } } : {}),
     }),
   });
   await expectOk("openrouter", res);
   const data = (await res.json()) as {
     choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] } }[];
+    usage?: TokenUsage;
     error?: { message: string };
   };
   if (data.error) throw new Error(`openrouter: ${data.error.message}`);
   const message = data.choices?.[0]?.message;
-  return { content: message?.content ?? "", toolCalls: message?.tool_calls ?? [] };
+  return { content: message?.content ?? "", toolCalls: message?.tool_calls ?? [], usage: data.usage };
 }
