@@ -26,7 +26,7 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
   Supervisor with `calendar_agent` and `gmail_agent` as tools → Parse Agent Output), `runner.ts` (tool-calling
   loop over OpenRouter), `prompts.ts` (the n8n prompts), `calendarTools.ts` (the n8n Calendar MCP tools),
   `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (window memory, in-instance), `html.ts`.
-  Supervisor = `LLM_MODEL`, sub-agents = `AGENT_MODEL`. Keep prompts and tool names in line with the n8n originals.
+  Supervisor = `LLM_MODEL`, sub-agents = `AGENT_MODEL` (defaults to `LLM_MODEL`, i.e. `openai/gpt-6-luna-pro` everywhere). Keep prompts and tool names in line with the n8n originals.
 - `src/bot/` — `onboarding.ts` (/start, /settings, /help), `owner.ts` (profile from Telegram/Google/env),
   `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /reset /help; everything else
   goes to the agents.
