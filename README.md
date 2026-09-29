@@ -88,7 +88,7 @@
   [cron-job.org](https://cron-job.org) → Sign up → **Create cronjob** → URL
   `https://<ваш-проєкт>.vercel.app/api/cron/reminders`, Schedule — **Every 5 minutes** (із заголовком
   `Authorization: Bearer <CRON_SECRET>`, якщо ви його задали). Це ~8,6 тис. викликів на місяць по ~0,3 с —
-  менше 1% безкоштовного ліміту Vercel. Точність ±5 хв; у тексті бот пише, скільки лишилось насправді. На Vercel Pro
+  менше 1% безкоштовного ліміту Vercel. Точність ±5 хв; у тексті бот пише, скільки лишилось насправді. Перевірити: відкрийте цю адресу в браузері — побачите `marks` (коли нагадувати), `upcoming` (зустрічі найближчим часом) і `sent` (що надіслано зараз). На Vercel Pro
   замість цього можна додати у `vercel.json` `{"path": "/api/cron/reminders", "schedule": "*/5 * * * *"}`.
 - Події, створені ботом, мають і звичайне нагадування Google Calendar.
 

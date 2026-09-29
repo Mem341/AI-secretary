@@ -95,3 +95,48 @@ describe("sendReminders (no AI: calendar → Telegram)", () => {
     expect(await sendReminders(env, now)).toBe(1);
   });
 });
+
+describe("the 5-minute pinger with the owner's four reminder times", () => {
+  it("1 h, 30, 10 and 5 min: each sent once as the meeting approaches; the endpoint reports what it saw", async () => {
+    await connectGoogle();
+    const { saveOwnerSettings } = await import("../src/google/oauth");
+    const { remindersCron } = await import("../src/app");
+    const start = Date.now() + 70 * MIN;
+    let ev: GEvent = {
+      id: "m9",
+      status: "confirmed",
+      summary: "Планування",
+      start: { dateTime: new Date(start).toISOString() },
+      end: { dateTime: new Date(start + 60 * MIN).toISOString() },
+      extendedProperties: { private: { aisStart: String(start) } },
+    };
+    const calls = mockFetch([
+      (url, init) => {
+        if (url.hostname !== "www.googleapis.com") return undefined;
+        if (init.method === "PATCH") {
+          ev = { ...ev, extendedProperties: { private: JSON.parse(init.bodyText).extendedProperties.private } };
+          return Response.json(ev);
+        }
+        const timeMax = Date.parse(url.searchParams.get("timeMax") ?? "");
+        return Response.json({ items: start <= timeMax ? [ev] : [] });
+      },
+    ]);
+    const { env } = testEnv();
+    await saveOwnerSettings(env, { r: [60, 30, 10, 5] });
+
+    const sentAt: number[] = [];
+    let lastBody: Record<string, unknown> = {};
+    for (let left = 70; left >= 0; left -= 5) {
+      vi.setSystemTime(start - left * MIN);
+      const before = tgCalls(calls, "sendMessage").length;
+      const res = await remindersCron(new Request("https://bot.test/api/cron/reminders", { headers: { authorization: "Bearer cron-secret" } }), env);
+      lastBody = (await res.json()) as Record<string, unknown>;
+      if (tgCalls(calls, "sendMessage").length > before) sentAt.push(left);
+    }
+    vi.useRealTimers();
+    expect(sentAt).toEqual([60, 30, 10, 5]);
+    const texts = tgCalls(calls, "sendMessage").map((m) => String(m.text)).filter((t) => t.includes("⏰"));
+    expect(texts.map((t) => /Через (\d+) хв/.exec(t)![1])).toEqual(["60", "30", "10", "5"]);
+    expect(lastBody).toMatchObject({ ok: true, marks: [60, 30, 10, 5] });
+  });
+});

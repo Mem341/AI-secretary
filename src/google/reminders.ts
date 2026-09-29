@@ -41,10 +41,23 @@ export function dueReminder(marks: number[], left: number, lastSent: number | nu
  * /api/cron/reminders every 5 minutes (any free pinger such as cron-job.org, or a Vercel Pro cron). Nothing is
  * stored: a reminded event gets a private property.
  */
+export interface ReminderCheck {
+  marks: number[];
+  sent: number;
+  /** Meetings in the reminder window, for the check's answer: title, minutes left, what was sent. */
+  upcoming: { title: string; minutesLeft: number; sentNow: number | null }[];
+}
+
 export async function sendReminders(env: Env, now = Date.now()): Promise<number> {
+  return (await checkReminders(env, now)).sent;
+}
+
+/** Sends the due reminders and says what it saw — /api/cron/reminders shows this, so a pinger's log explains itself. */
+export async function checkReminders(env: Env, now = Date.now()): Promise<ReminderCheck> {
   // The owner's choice from /settings, else REMINDER_MINUTES.
   const marks = await reminderMarks(env);
-  if (!marks.length) return 0;
+  const check: ReminderCheck = { marks, sent: 0, upcoming: [] };
+  if (!marks.length) return check;
   const cal = new Calendar(env);
   const window = Math.max(...marks) * MINUTE + EARLY;
   const page = await cal.listEvents({
@@ -55,7 +68,6 @@ export async function sendReminders(env: Env, now = Date.now()): Promise<number>
     maxResults: "50",
   });
   const tg = new Telegram(env);
-  let sent = 0;
   for (const ev of page.items) {
     const change = eventToChange(ev);
     if (change.kind !== "upsert") continue;
@@ -66,6 +78,8 @@ export async function sendReminders(env: Env, now = Date.now()): Promise<number>
     // Before marks existed the property held the start only: that reminder counts as the first (largest) mark.
     const lastSent = sentFor === String(m.start_at) ? Number(sentMark ?? Math.max(...marks)) : null;
     const mark = dueReminder(marks, m.start_at - now, lastSent);
+    const seen = { title: m.title ?? "зустріч", minutesLeft: Math.round((m.start_at - now) / MINUTE), sentNow: null as number | null };
+    check.upcoming.push(seen);
     if (mark === null || !firstTime(`remind:${ev.id}:${m.start_at}:${mark}`, DAY)) continue;
     const minutes = Math.max(1, Math.round((m.start_at - now) / MINUTE));
     const lines = [`⏰ <b>Через ${minutes} хв:</b> ${esc(m.title ?? "зустріч")}`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];
@@ -73,11 +87,12 @@ export async function sendReminders(env: Env, now = Date.now()): Promise<number>
     else if (m.location) lines.push(`📍 ${esc(m.location)}`);
     if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
     await tg.send(env.OWNER_TELEGRAM_ID, hiddenData({ k: "ev", id: ev.id } satisfies EventRef) + lines.join("\n"));
-    sent++;
+    check.sent++;
+    seen.sentNow = mark;
     // Recurring instances are not marked (that would turn each into an exception); the instance memory covers them.
     if (!ev.recurringEventId) await cal.setPrivate(ev.id, { ...props, [PROP_REMINDED]: `${m.start_at}:${mark}` }).catch(() => undefined);
   }
-  return sent;
+  return check;
 }
 
 /** Morning digest from the daily cron: today's remaining meetings. Nothing is sent on an empty day. */
