@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import type { Env } from "../env";
 import { safeEqual } from "../lib/crypto";
 import { HttpError } from "../lib/http";
-import { DAY, formatRange, MINUTE, toKyivDate } from "../lib/time";
+import { DAY, formatRange, formatTime, kyivParts, MINUTE, toKyivDate } from "../lib/time";
 import { firstTime, isMarked } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
+import type { InlineKeyboard } from "../telegram/types";
 import { Calendar, type GEvent } from "./calendar";
 
 /**
@@ -101,7 +102,7 @@ export async function listMeetings(env: Env, from: number, to: number): Promise<
 // ---------------------------------------------------------------------------------------------------------------
 // Instant notices
 
-/** Hidden in a notice about an event, so a reply to it acts on that event (bot/actions.ts). */
+/** Hidden in a notice about an event, so a reply to it acts on that event (the agents get its id as reply context). */
 export interface EventRef {
   k: "ev";
   id: string;
@@ -109,14 +110,74 @@ export interface EventRef {
 
 const REPLY_HINT = "Відповідайте на це повідомлення, щоб перенести, скасувати чи дізнатись учасників.";
 
-async function notify(env: Env, html: string, eventId: string | null): Promise<void> {
-  await new Telegram(env).send(env.OWNER_TELEGRAM_ID, (eventId ? hiddenData({ k: "ev", id: eventId } satisfies EventRef) : "") + html);
+async function notify(env: Env, html: string, eventId: string | null, keyboard?: InlineKeyboard): Promise<void> {
+  const hidden = eventId ? hiddenData({ k: "ev", id: eventId } satisfies EventRef) : "";
+  await new Telegram(env).send(env.OWNER_TELEGRAM_ID, hidden + html, keyboard ? { keyboard } : {});
 }
 
-function whereLine(m: Pick<Meeting, "meet_url" | "location">): string | null {
-  if (m.meet_url) return `🔗 ${esc(m.meet_url)}`;
-  if (m.location) return `📍 ${esc(m.location)}`;
-  return null;
+const WEEKDAYS = ["неділя", "понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота"];
+
+function durationText(minutes: number): string {
+  if (minutes < 60) return `${minutes} хв`;
+  if (minutes === 60) return "1 година";
+  return `${Math.floor(minutes / 60)} год${minutes % 60 ? ` ${minutes % 60} хв` : ""}`;
+}
+
+/** The n8n "Формат: нова зустріч" notice: an invitation with its organizer, guests' answers and the video link. */
+export function invitationNotice(ev: GEvent): string {
+  const description = (ev.description ?? "").replace(/<[^>]*>/g, "").trim().slice(0, 500);
+  const location = ev.location ?? "";
+  const organizer = ev.organizer?.displayName || ev.organizer?.email || "";
+  const allDay = !ev.start?.dateTime;
+  const start = new Date(ev.start?.dateTime ?? `${ev.start?.date}T00:00:00Z`);
+  const endRaw = ev.end?.dateTime;
+  const end = endRaw ? new Date(endRaw) : null;
+  const [y, mo, d] = (ev.start?.date ?? toKyivDate(start)).split("-");
+
+  let video = ev.hangoutLink ?? "";
+  let platform = "";
+  if (ev.conferenceData) {
+    const ep = (ev.conferenceData.entryPoints ?? []).find((x) => x.entryPointType === "video");
+    if (ep) video = ep.uri;
+    platform = ev.conferenceData.conferenceSolution?.name ?? "";
+  }
+  if (!video) {
+    const text = `${description} ${location}`;
+    const zoom = text.match(/https:\/\/[\w.-]*zoom\.us\/j\/[\w?=&-]+/);
+    const meet = text.match(/https:\/\/meet\.google\.com\/[\w-]+/);
+    if (zoom) [video, platform] = [zoom[0], "Zoom"];
+    else if (meet) [video, platform] = [meet[0], "Google Meet"];
+  }
+
+  const guests = (ev.attendees ?? [])
+    .filter((a) => !a.self && !a.resource)
+    .map((a) => {
+      const mark = a.responseStatus === "accepted" ? "✅" : a.responseStatus === "declined" ? "❌" : a.responseStatus === "tentative" ? "❓" : "⏳";
+      return `  ${mark} ${esc(a.displayName || a.email.split("@")[0]!)}`;
+    });
+
+  let msg = "📅 <b>Запрошення на зустріч</b>\n\n";
+  msg += `📌 <b>${esc(ev.summary || "Без назви")}</b>\n📆 ${d}.${mo}.${y} (${WEEKDAYS[kyivParts(start).weekday]})\n`;
+  if (allDay) msg += "🕐 Весь день\n";
+  else {
+    const minutes = end ? Math.round((end.getTime() - start.getTime()) / MINUTE) : 0;
+    msg += `🕐 ${formatTime(start)} — ${end ? formatTime(end) : ""}${minutes ? ` (${durationText(minutes)})` : ""}\n`;
+  }
+  if (organizer) msg += `\n👤 <b>Організатор:</b> ${esc(organizer)}\n`;
+  if (guests.length) msg += `\n👥 <b>Учасники (${guests.length}):</b>\n${guests.join("\n")}\n`;
+  if (video) {
+    const name = platform || (video.includes("zoom") ? "Zoom" : "Google Meet");
+    msg += `\n🎥 <b>${esc(name)}:</b> <a href="${esc(video)}">Приєднатися</a>\n`;
+  }
+  if (location && !location.includes("zoom") && !location.includes("meet.google")) msg += `\n📍 <b>Місце:</b> ${esc(location)}\n`;
+  if (description && !description.includes("zoom.us") && !description.includes("meet.google")) msg += `\n📝 <b>Опис:</b>\n<i>${esc(description)}</i>\n`;
+  return msg.trimEnd();
+}
+
+/** ✅ Прийняти / ❌ Відхилити; Telegram limits callback_data to 64 bytes, so an unusually long id gets no buttons. */
+export function invitationButtons(eventId: string): InlineKeyboard | undefined {
+  if (Buffer.byteLength(`decline:${eventId}`) > 64) return undefined;
+  return [[{ text: "✅ Прийняти", callback_data: `accept:${eventId}` }, { text: "❌ Відхилити", callback_data: `decline:${eventId}` }]];
 }
 
 /** Remembers on the event (silently) the start time the bot has seen. Failures only cost a repeated notice. */
@@ -164,13 +225,9 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
     const updated = ev.updated ? Date.parse(ev.updated) : now;
     const fresh = !Number.isNaN(created) && updated - created < 5 * MINUTE && !props[PROP_DRAFT];
     await remember(env, ev, m.start_at);
-    if (!fresh) return false;
-    const lines = [`🆕 <b>Нова подія в календарі</b>`, "", `<b>${esc(m.title ?? "без назви")}</b>`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];
-    const where = whereLine(m);
-    if (where) lines.push(where);
-    if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
-    lines.push("", REPLY_HINT);
-    await notify(env, lines.join("\n"), ev.id);
+    // n8n: an event the owner created is not announced.
+    if (!fresh || ev.organizer?.self) return false;
+    await notify(env, invitationNotice(ev), ev.id, invitationButtons(ev.id));
     return true;
   }
 

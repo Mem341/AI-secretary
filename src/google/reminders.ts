@@ -1,11 +1,19 @@
-import { formatAgenda } from "../bot/agenda";
 import type { Env } from "../env";
 import { DAY, formatRange, kyivLocalToDate, kyivParts, MINUTE } from "../lib/time";
 import { firstTime } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
 import { Calendar } from "./calendar";
-import { type EventRef, eventToChange, listMeetings } from "./sync";
+import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
+
+export function formatAgenda(meetings: Meeting[], now: Date): string {
+  return meetings
+    .map((m) => {
+      const where = m.meet_url ? " · онлайн" : m.location ? ` · ${esc(m.location)}` : "";
+      return `• <b>${esc(formatRange(new Date(m.start_at), new Date(m.end_at), now))}</b> — ${esc(m.title ?? "без назви")}${where}`;
+    })
+    .join("\n");
+}
 
 /** Private event property: the start time the bot already sent a reminder for (a moved meeting is reminded again). */
 export const PROP_REMINDED = "aisReminded";

@@ -1,18 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { oauthCallback, telegramWebhook } from "../src/app";
-import type { CardData } from "../src/bot/meetings";
 import { connectLink, hasGoogleAuth, resetGoogleCache } from "../src/google/oauth";
 import { toBase64Url } from "../src/lib/crypto";
 import { handleUpdate } from "../src/telegram/handler";
-import { readHidden } from "../src/telegram/hidden";
+import { hiddenData } from "../src/telegram/hidden";
 import type { TgMessage, TgUpdate } from "../src/telegram/types";
 import {
   botMessage,
   calendarList,
   connectGoogle,
   lastBotMessage,
-  llmReply,
+  lastContent,
+  type LlmRequest,
+  llmText,
+  llmTools,
   mockFetch,
+  openRouter,
   OWNER,
   resetInstance,
   runJobs,
@@ -48,29 +51,6 @@ function callbackUpdate(fromId: number, data: string, message?: TgMessage): TgUp
   };
 }
 
-function inDays(days: number, hourKyiv: number): string {
-  const d = new Date(Date.now() + days * 86400_000);
-  d.setUTCHours(hourKyiv - 3, 0, 0, 0);
-  return d.toISOString().replace(".000Z", "Z");
-}
-
-const CARD = {
-  title: null,
-  start: null as string | null,
-  date: null,
-  duration_min: null,
-  format: "offline",
-  location: null,
-  attendees: [{ name: "Олег Мельник", email: "o.melnyk@acme.ua", internal: true }],
-  initiator: null,
-  purpose: "Бюджет",
-  agenda: [],
-  agreed_via: null,
-  agreed_at: null,
-  missing: [],
-  confidence: 0.9,
-  clarify_question: null,
-};
 
 describe("single owner", () => {
   it("ignores everyone except OWNER_TELEGRAM_ID, without replying", async () => {
@@ -177,121 +157,213 @@ describe("Google connection lives in one pinned message", () => {
   });
 });
 
-describe("meeting card without a database", () => {
-  it("text → card with its data hidden inside → «Створити» creates the event from the message itself", async () => {
+describe("agents (the n8n «AI Agent ALL» flow)", () => {
+  it("text → Supervisor → calendar_agent (with its tools) → the agent's answer goes to the chat as HTML", async () => {
     await connectGoogle();
-    const start = inDays(1, 10);
-    let inserted: Record<string, unknown> | undefined;
+    const seen: LlmRequest[] = [];
+    let listed = false;
     const calls = mockFetch([
+      (url, init) => {
+        if (url.pathname !== "/calendar/v3/calendars/primary/events" || (init.method ?? "GET") !== "GET") return undefined;
+        if (url.searchParams.get("orderBy") === "startTime" && url.searchParams.get("maxResults") === "20") listed = true;
+        return Response.json({ items: [] });
+      },
+      openRouter((req) => {
+        if (req.model === "test/supervisor-model") {
+          return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
+        }
+        return req.messages.at(-1)!.role === "tool"
+          ? llmText("📅 <b>Розклад на сьогодні:</b>\n\nЗустрічей немає")
+          : llmTools(["get_calendar_events", { timeMax: "2026-10-01T00:00:00+03:00" }]);
+      }, seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "що в мене сьогодні?"));
+    expect(jobs.map((j) => j.body.type)).toEqual(["agent"]);
+    await runJobs(env, jobs);
+
+    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/agent-model", "test/agent-model", "test/supervisor-model"]);
+    // Supervisor: n8n "Build Agent Context"; its tools are the two agents (+ think).
+    expect(lastContent(seen[0]!)).toContain("USER: що в мене сьогодні?");
+    expect(lastContent(seen[0]!)).toContain("---SESSION---");
+    expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent", "think"]);
+    // The Calendar Agent gets the user's message without the session block, and the calendar tools.
+    expect(lastContent(seen[1]!)).toBe("що в мене сьогодні?");
+    expect(seen[1]!.tools!.map((t) => t.function.name)).toContain("create_event_google_meet");
+    expect(String(seen[1]!.messages[0]!.content)).toContain("o.kovalenko@acme.ua");
+    expect(listed).toBe(true);
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("📅 <b>Розклад на сьогодні:</b>\n\nЗустрічей немає");
+  });
+
+  it("create_event_google_meet: Meet link, 10-minute popup, guests cannot edit, silent for the calendar notices", async () => {
+    await connectGoogle();
+    let inserted: Record<string, unknown> | undefined;
+    let insertUrl: URL | undefined;
+    mockFetch([
       calendarList([]),
-      (url, init) =>
-        url.hostname === "openrouter.ai" ? llmReply({ ...CARD, start: start.replace("Z", "+00:00") }) : undefined,
       (url, init) => {
         if (url.pathname !== "/calendar/v3/calendars/primary/events" || init.method !== "POST") return undefined;
+        insertUrl = url;
         inserted = JSON.parse(init.bodyText);
-        return Response.json({ id: inserted!.id, htmlLink: "https://calendar.google.com/e", status: "confirmed" });
+        return Response.json({ id: "ev1", status: "confirmed", hangoutLink: "https://meet.google.com/abc", organizer: { self: true } });
       },
+      openRouter((req) => {
+        if (req.model === "test/supervisor-model") {
+          return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
+        }
+        return req.messages.at(-1)!.role === "tool"
+          ? llmText("✅ <b>Зустріч створена!</b>")
+          : llmTools([
+              "create_event_google_meet",
+              {
+                summary: "Бюджет",
+                description: "",
+                startDateTime: "2026-10-01T10:00:00+03:00",
+                endDateTime: "2026-10-01T11:00:00+03:00",
+                attendeesJson: '{"email":"o.kovalenko@acme.ua"},{"email":"o.melnyk@acme.ua"}',
+              },
+            ]);
+      }),
     ]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра о 10 по бюджету"));
-    expect(jobs[0]!.body.type).toBe("parse");
+    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом 1 жовтня о 10 по бюджету"));
     await runJobs(env, jobs);
 
-    const models = calls.filter((c) => c.url.includes("openrouter.ai")).map((c) => (c.body as { model: string }).model);
-    expect(models).toEqual(["test/card-model"]);
-    const card = lastBotMessage("Нова зустріч");
-    const data = readHidden<CardData>(card)!;
-    expect(data.k).toBe("card");
-    expect(data.card.attendees[0]!.email).toBe("o.melnyk@acme.ua");
-    const keyboard = tgCalls(calls, "editMessageText").at(-1)!.reply_markup as { inline_keyboard: { callback_data: string }[][] };
-    expect(keyboard.inline_keyboard[0]![0]!.callback_data).toBe("d:c");
-
-    await handleUpdate(env, callbackUpdate(OWNER, "d:c", card));
-    expect(inserted!.id).toMatch(/^ais[0-9a-f]{32}$/);
+    expect(insertUrl!.searchParams.get("conferenceDataVersion")).toBe("1");
+    expect(inserted).toMatchObject({
+      summary: "Бюджет",
+      guestsCanModify: false,
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 10 }] },
+      attendees: [{ email: "o.kovalenko@acme.ua" }, { email: "o.melnyk@acme.ua" }],
+      conferenceData: { createRequest: { conferenceSolutionKey: { type: "hangoutsMeet" } } },
+    });
     const props = (inserted!.extendedProperties as { private: Record<string, string> }).private;
-    expect(props.aisStart).toBe(String(Date.parse(start)));
-    expect(props.aiSecretaryDraft).toBe(data.id);
-    const created = botMessage(card.message_id);
-    expect(created.text).toContain("Зустріч створена");
-    expect(readHidden<{ k: string; id: string }>(created)).toEqual({ k: "ev", id: inserted!.id });
+    expect(props.aisStart).toBe(String(Date.parse("2026-10-01T10:00:00+03:00")));
+    expect(lastBotMessage("Зустріч створена")).toBeTruthy();
   });
 
-  it("«Змінити» sends a reply prompt carrying the card; the answer edits the original card", async () => {
+  it("✅ Прийняти under an invitation: accept:{id} → rsvp_event keeps the other guests; the buttons are removed", async () => {
     await connectGoogle();
-    const start = inDays(1, 10);
-    const edited = inDays(1, 16);
-    let llmCalls = 0;
-    mockFetch([
+    const invitation = tg.message(hiddenData({ k: "ev", id: "ev7" }) + "📅 <b>Запрошення на зустріч</b>\n\n📌 <b>Демо</b>");
+    let patched: { attendees: { email: string; responseStatus?: string }[] } | undefined;
+    const seen: LlmRequest[] = [];
+    const calls = mockFetch([
       calendarList([]),
-      (url) => {
-        if (url.hostname !== "openrouter.ai") return undefined;
-        llmCalls++;
-        return llmReply({ ...CARD, start: (llmCalls === 1 ? start : edited).replace("Z", "+00:00") });
+      (url, init) => {
+        if (url.pathname !== "/calendar/v3/calendars/primary/events/ev7") return undefined;
+        if (init.method === "PATCH") {
+          patched = JSON.parse(init.bodyText);
+          return Response.json({ id: "ev7", ...patched });
+        }
+        return Response.json({
+          id: "ev7",
+          attendees: [
+            { email: "boss@partner.ua", organizer: true, responseStatus: "accepted" },
+            { email: "o.kovalenko@acme.ua", self: true, responseStatus: "needsAction" },
+            { email: "anna@partner.ua", responseStatus: "tentative" },
+          ],
+        });
       },
+      openRouter((req) => {
+        if (req.model === "test/supervisor-model") {
+          return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
+        }
+        return req.messages.at(-1)!.role === "tool" ? llmText("✅ Зустріч підтверджена!") : llmTools(["rsvp_event", { eventId: "ev7", responseStatus: "accepted" }]);
+      }, seen),
     ]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра о 10"));
+    await handleUpdate(env, callbackUpdate(OWNER, "accept:ev7", invitation));
     await runJobs(env, jobs);
-    const card = lastBotMessage("Нова зустріч");
 
-    await handleUpdate(env, callbackUpdate(OWNER, "d:e", card));
-    const prompt = lastBotMessage("що змінити");
-    expect(readHidden<CardData>(prompt)!.msg).toBe(card.message_id);
-
-    await handleUpdate(env, textUpdate(OWNER, "перенеси на 16:00", { reply_to_message: prompt }));
-    expect(jobs[0]!.body).toMatchObject({ type: "edit", instruction: "перенеси на 16:00", messageId: card.message_id });
-    await runJobs(env, jobs);
-    expect(readHidden<CardData>(botMessage(card.message_id))!.card.start).toContain("16:00");
+    expect(lastContent(seen[0]!)).toContain("USER: [Кнопка: accept:ev7]");
+    expect(lastContent(seen[0]!)).toContain("callbackData: accept:ev7");
+    expect(lastContent(seen[0]!)).toContain("[eventId: ev7]");
+    expect(patched!.attendees.map((a) => [a.email, a.responseStatus])).toEqual([
+      ["boss@partner.ua", "accepted"],
+      ["o.kovalenko@acme.ua", "accepted"],
+      ["anna@partner.ua", "tentative"],
+    ]);
+    expect(tgCalls(calls, "answerCallbackQuery")).toHaveLength(1);
+    expect(tgCalls(calls, "editMessageReplyMarkup")[0]).toMatchObject({ message_id: invitation.message_id, reply_markup: { inline_keyboard: [] } });
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("✅ Зустріч підтверджена!");
   });
 
-  it("the answer also works without «reply», while the instance remembers the question", async () => {
+  it("a reply to the bot's message carries its text and the event id (n8n REPLY_TO_BOT_MESSAGE)", async () => {
     await connectGoogle();
-    mockFetch([calendarList([]), (url) => (url.hostname === "openrouter.ai" ? llmReply({ ...CARD, start: inDays(1, 10) }) : undefined)]);
+    const notice = tg.message(hiddenData({ k: "ev", id: "ev9" }) + "🔄 <b>Подію перенесено в календарі</b>\n\n<b>Стендап</b>");
+    const seen: LlmRequest[] = [];
+    mockFetch([openRouter(() => llmText("Добре"), seen)]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом"));
+    await handleUpdate(env, textUpdate(OWNER, "скасуй", { reply_to_message: notice }));
     await runJobs(env, jobs);
-    const card = lastBotMessage("Нова зустріч");
-    await handleUpdate(env, callbackUpdate(OWNER, "d:e", card));
-    await handleUpdate(env, textUpdate(OWNER, "зроби онлайн"));
-    expect(jobs[0]!.body).toMatchObject({ type: "edit", instruction: "зроби онлайн" });
+    const input = lastContent(seen[0]!);
+    expect(input.startsWith("---REPLY_TO_BOT_MESSAGE---\n")).toBe(true);
+    expect(input).toContain("Стендап");
+    expect(input).toContain("\n[eventId: ev9]\n---END_REPLY---\n\nUSER: скасуй");
   });
 
-  it("an unclear request becomes a question; the answer is parsed together with the original text", async () => {
+  it("remembers the conversation within the instance (n8n chat memory); /reset forgets it", async () => {
+    const seen: LlmRequest[] = [];
+    mockFetch([openRouter((_req, n) => llmText(n === 1 ? "Привіт! Чим допомогти?" : "Завжди радий допомогти!"), seen)]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "привіт"));
+    await runJobs(env, jobs);
+    await handleUpdate(env, textUpdate(OWNER, "дякую"));
+    await runJobs(env, jobs);
+    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(seen[1]!.messages[2]!.content).toBe("Привіт! Чим допомогти?");
+
+    await handleUpdate(env, textUpdate(OWNER, "/reset"));
+    await handleUpdate(env, textUpdate(OWNER, "ще раз"));
+    await runJobs(env, jobs);
+    expect(seen[2]!.messages.map((m) => m.role)).toEqual(["system", "user"]);
+  });
+
+  it("without Google the agents say how to connect it instead of failing", async () => {
+    const seen: LlmRequest[] = [];
+    mockFetch([
+      openRouter((req) =>
+        req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]),
+      seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра"));
+    await runJobs(env, jobs);
+    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/supervisor-model"]);
+    expect(lastBotMessage("Google не підключено")).toBeTruthy();
+  });
+
+  it("delete_event marks the event as the bot's own before deleting, so no «cancelled» notice follows", async () => {
     await connectGoogle();
-    const sent: string[] = [];
+    const order: string[] = [];
     mockFetch([
       calendarList([]),
       (url, init) => {
-        if (url.hostname !== "openrouter.ai") return undefined;
-        const body = JSON.parse(init.bodyText) as { messages: { content: { text?: string }[] | string }[] };
-        const user = body.messages[1]!.content;
-        sent.push(typeof user === "string" ? user : user[0]!.text!);
-        return llmReply(sent.length === 1 ? { ...CARD, confidence: 0.3, clarify_question: "З ким зустріч?" } : { ...CARD, start: inDays(1, 10) });
+        if (url.pathname !== "/calendar/v3/calendars/primary/events/ev5") return undefined;
+        const method = init.method ?? "GET";
+        if (method === "PATCH") order.push(`patch:${JSON.stringify(JSON.parse(init.bodyText).extendedProperties.private)}:${url.searchParams.get("sendUpdates")}`);
+        if (method === "DELETE") {
+          order.push("delete");
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ id: "ev5", extendedProperties: { private: { aisStart: "1" } } });
       },
+      openRouter((req) => {
+        if (req.model === "test/supervisor-model") {
+          return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
+        }
+        return req.messages.at(-1)!.role === "tool" ? llmText("🗑 Видалено") : llmTools(["delete_event", { eventId: "ev5" }]);
+      }),
     ]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, textUpdate(OWNER, "треба зустрітись завтра"));
+    await handleUpdate(env, textUpdate(OWNER, "видали стендап"));
     await runJobs(env, jobs);
-    const question = lastBotMessage("З ким зустріч?");
-    await handleUpdate(env, textUpdate(OWNER, "з Олегом о 10", { reply_to_message: question }));
-    await runJobs(env, jobs);
-    expect(sent[1]).toContain("треба зустрітись завтра");
-    expect(sent[1]).toContain("Уточнення: з Олегом о 10");
-    expect(lastBotMessage("Нова зустріч")).toBeTruthy();
+    expect(order).toEqual(['patch:{"aisStart":"1","aisBotCancel":"1"}:none', "delete"]);
   });
 
-  it("a burst of forwarded messages becomes one card (debounced in the instance)", async () => {
-    await connectGoogle();
-    const prompts: string[] = [];
-    mockFetch([
-      calendarList([]),
-      (url, init) => {
-        if (url.hostname !== "openrouter.ai") return undefined;
-        const body = JSON.parse(init.bodyText) as { messages: { content: { text: string }[] }[] };
-        prompts.push(body.messages[1]!.content[0]!.text);
-        return llmReply({ ...CARD, start: inDays(2, 11) });
-      },
-    ]);
+  it("a burst of forwarded messages becomes one request (debounced in the instance)", async () => {
+    const seen: LlmRequest[] = [];
+    mockFetch([openRouter(() => llmText("ok"), seen)]);
     const { env, jobs } = testEnv();
     const fwd = (text: string) =>
       textUpdate(OWNER, text, { forward_origin: { type: "user", date: 1_790_000_000, sender_user: { id: 7, is_bot: false, first_name: "Іван" } } });
@@ -302,24 +374,33 @@ describe("meeting card without a database", () => {
       { type: "batch", chatId: OWNER, seq: 2 },
     ]);
     await runJobs(env, jobs);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain("Привіт, зустрінемось?");
-    expect(prompts[0]).toContain("Давай у середу об 11");
+    expect(seen).toHaveLength(1);
+    expect(lastContent(seen[0]!)).toContain("Іван: Привіт, зустрінемось?");
+    expect(lastContent(seen[0]!)).toContain("Іван: Давай у середу об 11");
+    expect(lastContent(seen[0]!)).toContain("inputType: forward");
   });
 
-  it("asks to connect Google before preparing a card", async () => {
-    const calls = mockFetch([]);
+  it("markup Telegram rejects is sent again as plain text", async () => {
+    let first = true;
+    const calls = mockFetch([
+      (url) => {
+        if (!url.pathname.endsWith("/sendMessage") || !first) return undefined;
+        first = false;
+        return Response.json({ ok: false, description: "Bad Request: can't parse entities" }, { status: 400 });
+      },
+      openRouter(() => llmText('<a href="x y">лінк</a> & <b>готово</b>')),
+    ]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра"));
-    expect(jobs).toEqual([]);
-    expect(tgCalls(calls, "sendMessage").map((m) => String(m.text)).join("\n")).toContain("підключіть Google");
+    await handleUpdate(env, textUpdate(OWNER, "привіт"));
+    await runJobs(env, jobs);
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("лінк &amp; готово");
   });
 });
 
 describe("voice", () => {
-  it("transcribes through OpenRouter and continues as text", async () => {
-    await connectGoogle();
+  it("transcribes through OpenRouter, shows the text and hands it to the agents", async () => {
     let audio: { data: string; format: string } | undefined;
+    const seen: LlmRequest[] = [];
     const calls = mockFetch([
       (url, init) => {
         if (url.hostname !== "openrouter.ai") return undefined;
@@ -328,14 +409,16 @@ describe("voice", () => {
         audio = body.messages[0].content.find((p: { type: string }) => p.type === "input_audio").input_audio;
         return Response.json({ choices: [{ message: { content: " зустріч з Іваном завтра о 10 \n" } }] });
       },
+      openRouter(() => llmText("ok"), seen),
     ]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "", { text: undefined, voice: { file_id: "f", file_unique_id: "u", duration: 3 } }));
     expect(jobs.map((j) => j.body.type)).toEqual(["voice"]);
-    await runJobs(env, [jobs.shift()!]);
+    await runJobs(env, jobs);
     expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
     expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>зустріч з Іваном завтра о 10</i>"))).toBe(true);
-    expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
+    expect(lastContent(seen[0]!)).toContain("USER: зустріч з Іваном завтра о 10");
+    expect(lastContent(seen[0]!)).toContain("inputType: voice");
   });
 });
 
@@ -403,14 +486,10 @@ describe("typing indicator", () => {
       await connectGoogle();
       let release: (() => void) | undefined;
       const calls = mockFetch([
-        calendarList([]),
-        (url) =>
-          url.hostname === "openrouter.ai"
-            ? new Promise<Response>((r) => (release = () => r(llmReply({ ...CARD, start: inDays(1, 10) }))))
-            : undefined,
+        (url) => (url.hostname === "openrouter.ai" ? new Promise<Response>((r) => (release = () => r(llmText("ok")))) : undefined),
       ]);
       const { env, jobs } = testEnv();
-      const running = runJobs(env, [{ body: { type: "parse", draft: { id: "d1", src: "зустріч", st: "text" }, messageId: null } }]);
+      const running = runJobs(env, [{ body: { type: "agent", input: { chatId: OWNER, inputType: "text", text: "привіт" }, photoIds: [] } }]);
       // Wait (in fake time, with real async crypto in between) until the job is inside the LLM call.
       for (let i = 0; i < 200 && !release; i++) await vi.advanceTimersByTimeAsync(50);
       expect(release).toBeDefined();

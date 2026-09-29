@@ -22,12 +22,17 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - `api/` — Vercel Functions (thin wrappers); `vercel.json` — function limits, `/` redirect, daily cron.
 - `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap.
 - `src/jobs.ts` — background jobs (run after the response, 3 attempts).
-- `src/bot/` — commands and a persistent menu (`onboarding.ts` MENU); no AI router: plain text is a meeting request, mail
-  words go to Gmail, the LLM only works inside a flow. `agenda.ts` (/today /tomorrow /week /free), `meetings.ts` (meeting cards + the text router), `actions.ts` (reschedule/cancel/note by reply),
-  `mail.ts` (Gmail agent), `onboarding.ts` (/start, /settings), `owner.ts` (profile from Telegram/Google/env),
-  `contacts.ts` (names → emails from calendar attendees), `card.ts`.
-- `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices, `reminders.ts` (morning digest,
-  reminders via /api/cron/reminders), Gmail API + Pub/Sub push.
+- `src/agent/` — a strict port of the owner's n8n flows: `index.ts` (Normalize Input / Build Agent Context →
+  Supervisor with `calendar_agent` and `gmail_agent` as tools → Parse Agent Output), `runner.ts` (tool-calling
+  loop over OpenRouter), `prompts.ts` (the n8n prompts), `calendarTools.ts` (the n8n Calendar MCP tools),
+  `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (window memory, in-instance), `html.ts`.
+  Supervisor = `LLM_MODEL`, sub-agents = `AGENT_MODEL`. Keep prompts and tool names in line with the n8n originals.
+- `src/bot/` — `onboarding.ts` (/start, /settings, /help), `owner.ts` (profile from Telegram/Google/env),
+  `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /reset /help; everything else
+  goes to the agents.
+- `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
+  format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest,
+  reminders via /api/cron/reminders), Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
 - `vercel.json` crons stay daily (Vercel Hobby rejects more frequent ones); /api/cron/reminders is for an optional
   5-minute cron.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived
@@ -36,13 +41,14 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 ## Where state lives (there is no database)
 
 - Google grant: encrypted in ONE pinned message of the owner's chat (`loadGrant` reads it via getChat).
-- Cards, pending actions, "which meeting/email is this reply about": hidden in the bot's own messages
-  (`hiddenData` / `readHidden`); Telegram returns them with button presses and replies. Keep them under
+- "Which meeting/email is this reply about": hidden in the bot's own notices (`hiddenData` / `readHidden`) and
+  passed to the agents as `[eventId: …]` / `[messageId: …]` in the reply context. Other hidden data likewise lives
+  in the bot's own messages; Telegram returns it with button presses and replies. Keep it under
   `MAX_HIDDEN`.
 - Calendar: read live; what the bot already reported is a private extended property on each event
   (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`). Gmail: a hidden label marks reported emails.
-- Bursts of forwarded messages and "the bot just asked X": `session.ts`, in memory, self-expiring; losing it may
-  cost a duplicate, never data. Do not add a database or any other store.
+- Bursts of forwarded messages (`session.ts`) and the agents' chat memory (`agent/memory.ts`): in memory,
+  self-expiring; losing it may cost context or a duplicate, never data. Do not add a database or any other store.
 
 ## Rules
 
@@ -50,8 +56,9 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - Keep the deployment generic (no company-specific names or data). The app boots with only `OWNER_TELEGRAM_ID`,
   `TELEGRAM_BOT_TOKEN`, `OPENROUTER_API_KEY`; Google keys are collected at deploy but the app
   must still start without them; new features must be optional or derived.
-- Anything that writes to the calendar or sends/removes mail goes through a confirmation card; read-only and
-  easily reversible actions may run at once. Keep the bot's own Calendar writes silent: set `aisStart` in the same write (or `aisBotCancel` before a delete).
+- The agents act as the n8n prompts say: calendar requests are carried out directly; sending or trashing mail
+  needs a preview and the owner's "yes" in the conversation. Keep the bot's own Calendar writes silent: set
+  `aisStart` in the same write (or `aisBotCancel` before a delete).
 - Keep the Vercel `api/*` files and the docs' URLs in sync when adding an endpoint. Do not add other platforms.
 - Compiles to CommonJS (`tsconfig.json`), which Vercel's Node runtime needs for extensionless imports.
 - Check before pushing: `npm run typecheck && npm test` (tests mock all outbound HTTP; `test/helpers.ts` has a fake Telegram that keeps messages, entities and the pin).

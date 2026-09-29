@@ -13,7 +13,7 @@
 
 - доступ до Google лежить зашифрованим в **одному закріпленому повідомленні** в чаті з ботом («🔐 Google
   підключено»). Не відкріплюйте його; щоб відключити Google — просто видаліть це повідомлення;
-- картка зустрічі несе свої дані всередині самого повідомлення в Telegram;
+- памʼять розмови — лише в запущеній функції, сама очищується;
 - календар бот щоразу читає прямо з Google.
 
 Голосові повідомлення розпізнає той самий OpenRouter — окремий ключ не потрібен.
@@ -23,8 +23,7 @@
 - **Zoom** — зустрічі в Zoom замість Google Meet: Account ID, Client ID і Client Secret застосунку
   Server-to-Server OAuth ([Zoom Marketplace](https://marketplace.zoom.us/develop/create), scope `meeting:write:admin`);
 - миттєві сповіщення про нові листи (Cloud Pub/Sub) — кроки на сторінці `/api/setup`;
-- профіль для опису подій: `OWNER_NAME` (інакше — імʼя з Telegram), `OWNER_POSITION`, `OWNER_PHONE`, а також
-  `DEFAULT_DURATION_MIN`, `DEFAULT_FORMAT` (offline / google_meet / zoom), `DEFAULT_ADDRESS`, `LLM_MODEL`;
+- `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `LLM_MODEL` і `AGENT_MODEL`;
 - нагадування за 30 хв до зустрічі — потрібен частий cron (див. README → «Нагадування»); ранковий список зустрічей працює й так.
 
 ---
