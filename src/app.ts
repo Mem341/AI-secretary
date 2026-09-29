@@ -308,7 +308,7 @@ export function setupBootErrorPage(source: Record<string, string | undefined>, m
     steps.push({
       status: "error",
       title: "Змінні середовища",
-      details: `Додайте змінні середовища й перерозгорніть (Vercel: Project → Settings → Environment Variables; AWS: параметри стека в ${code("template.yaml")}): ${missing.map(code).join(", ")}.<ol>
+      details: `Додайте змінні середовища й перерозгорніть (Vercel: Project → Settings → Environment Variables): ${missing.map(code).join(", ")}.<ol>
 <li>${code("TELEGRAM_BOT_TOKEN")} — у <a href="https://t.me/BotFather">@BotFather</a> командою /newbot.</li>
 <li>${code("OWNER_TELEGRAM_ID")} — ваш числовий ID, його напише <a href="https://t.me/userinfobot">@userinfobot</a>. Бот відповідатиме лише цій людині.</li>
 <li>${code("OPENROUTER_API_KEY")} — <a href="https://openrouter.ai/keys">openrouter.ai/keys</a>.</li></ol>`,

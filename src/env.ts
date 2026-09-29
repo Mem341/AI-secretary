@@ -70,7 +70,7 @@ function derive(botToken: string, purpose: string): string {
 
 /**
  * Reads and validates the configuration; lists every missing variable at once. `fallbackPublicUrl` is used when
- * neither PUBLIC_URL nor Vercel's production URL is set (AWS: the Function URL the request arrived on).
+ * neither PUBLIC_URL nor Vercel's production URL is set.
  */
 export function loadConfig(source: Record<string, string | undefined> = process.env, fallbackPublicUrl = ""): Config {
   const val = (k: string) => source[k]?.trim() ?? "";
