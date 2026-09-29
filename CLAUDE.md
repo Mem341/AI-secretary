@@ -46,7 +46,7 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
   in the bot's own messages; Telegram returns it with button presses and replies. Keep it under
   `MAX_HIDDEN`.
 - Calendar: read live; what the bot already reported is a private extended property on each event
-  (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`). Gmail: a hidden label marks reported emails.
+  (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`, `aisRsvp` — guests' answers already reported). Gmail: a hidden label marks reported emails.
 - Bursts of forwarded messages (`session.ts`) and the agents' chat memory (`agent/memory.ts`): in memory,
   self-expiring; losing it may cost context or a duplicate, never data. Do not add a database or any other store.
 

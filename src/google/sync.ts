@@ -7,19 +7,22 @@ import { firstTime, isMarked } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
 import type { InlineKeyboard } from "../telegram/types";
-import { Calendar, type GEvent } from "./calendar";
+import { Calendar, type GAttendee, type GEvent } from "./calendar";
 
 /**
  * Calendar → Telegram, without a database. Google calls /api/gcal-push when the calendar changes; the bot lists
- * the events changed in the last minutes and reports new, moved and cancelled ones. What it already reported is
- * remembered by Google itself: a private property on the owner's copy of each event holds the start time the bot
- * last saw, so a guest's RSVP or a description edit stays silent and a move is shown as "було → стало".
+ * the events changed in the last minutes and reports new, moved and cancelled ones, and guests' answers to the
+ * owner's own meetings. What it already reported is remembered by Google itself: private properties on the owner's
+ * copy of each event hold the start time and the guests' answers the bot last saw, so a description edit stays
+ * silent, a move is shown as "було → стало" and each answer is reported once.
  */
 
 /** Private event properties the bot uses (invisible to guests). */
 export const PROP_START = "aisStart";
 export const PROP_DRAFT = "aiSecretaryDraft";
 export const PROP_BOT_CANCEL = "aisBotCancel";
+/** Guests' answers the bot last saw, as "hash:letter,…" (short email hashes keep it under Google's 1024 chars). */
+export const PROP_RSVP = "aisRsvp";
 
 /** How far back a push looks for changed events; pushes usually arrive within seconds. */
 const RECENT_MS = 10 * MINUTE;
@@ -180,10 +183,69 @@ export function invitationButtons(eventId: string): InlineKeyboard | undefined {
   return [[{ text: "✅ Прийняти", callback_data: `accept:${eventId}` }, { text: "❌ Відхилити", callback_data: `decline:${eventId}` }]];
 }
 
-/** Remembers on the event (silently) the start time the bot has seen. Failures only cost a repeated notice. */
+type Answer = "accepted" | "declined" | "tentative" | "needsAction";
+const LETTER: Record<Answer, string> = { accepted: "a", declined: "d", tentative: "t", needsAction: "n" };
+
+const emailHash = (email: string) => createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 7);
+
+/** The guests (not the owner, not rooms) and their answers. */
+function guests(ev: GEvent): GAttendee[] {
+  return (ev.attendees ?? []).filter((a) => !a.self && !a.resource && a.email);
+}
+
+export function rsvpSnapshot(ev: GEvent): string {
+  return guests(ev)
+    .map((a) => `${emailHash(a.email)}:${LETTER[(a.responseStatus ?? "needsAction") as Answer] ?? "n"}`)
+    .join(",")
+    .slice(0, 1000);
+}
+
+function parseSnapshot(value: string): Map<string, string> {
+  return new Map(value.split(",").filter(Boolean).map((x) => x.split(":") as [string, string]));
+}
+
+/** Guests whose answer changed since `snapshot` (only real answers: accepted, declined, maybe). */
+export function rsvpChanges(ev: GEvent, snapshot: string): GAttendee[] {
+  const seen = parseSnapshot(snapshot);
+  return guests(ev).filter((a) => {
+    const status = (a.responseStatus ?? "needsAction") as Answer;
+    return status !== "needsAction" && seen.get(emailHash(a.email)) !== LETTER[status];
+  });
+}
+
+/** "👥 Відповідь на запрошення": who is coming to the owner's meeting and who is not. */
+export function rsvpNotice(ev: GEvent, changed: GAttendee[]): string {
+  const start = new Date(ev.start?.dateTime ?? "");
+  const end = new Date(ev.end?.dateTime ?? "");
+  const [y, mo, d] = toKyivDate(start).split("-");
+  const lines = changed.map((a) => {
+    const name = esc(a.displayName || a.email);
+    if (a.responseStatus === "accepted") return `✅ ${name} — буде`;
+    if (a.responseStatus === "declined") return `❌ ${name} — не буде`;
+    return `❓ ${name} — можливо`;
+  });
+  const all = guests(ev);
+  const count = (s: string) => all.filter((a) => (a.responseStatus ?? "needsAction") === s).length;
+  const summary = [`✅ ${count("accepted")}`, `❌ ${count("declined")}`, `❓ ${count("tentative")}`, `⏳ ${count("needsAction")}`].join(" · ");
+  return [
+    "👥 <b>Відповідь на запрошення</b>",
+    "",
+    `📌 <b>${esc(ev.summary || "Без назви")}</b>`,
+    `📆 ${d}.${mo}.${y} (${WEEKDAYS[kyivParts(start).weekday]}), 🕐 ${formatTime(start)} — ${formatTime(end)}`,
+    "",
+    ...lines,
+    "",
+    `Усього: ${summary}`,
+  ].join("\n");
+}
+
+/**
+ * Remembers on the event (silently) the start time and the guests' answers the bot has seen. Failures only cost a
+ * repeated notice.
+ */
 async function remember(env: Env, ev: GEvent, start: number): Promise<void> {
   await new Calendar(env)
-    .setPrivate(ev.id, { ...(ev.extendedProperties?.private ?? {}), [PROP_START]: String(start) })
+    .setPrivate(ev.id, { ...(ev.extendedProperties?.private ?? {}), [PROP_START]: String(start), [PROP_RSVP]: rsvpSnapshot(ev) })
     .catch((err) => console.warn("gcal: cannot mark event", ev.id, err instanceof Error ? err.message : err));
 }
 
@@ -217,7 +279,18 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
   const m = change.meeting;
   if (m.end_at < now) return false;
   const known = props[PROP_START];
-  if (known === String(m.start_at)) return false;
+  if (known === String(m.start_at)) {
+    // Same time: maybe a guest answered the owner's invitation.
+    if (!ev.organizer?.self) return false;
+    // An event the bot created starts with nobody answered; an older one is just remembered the first time.
+    const snapshot = props[PROP_RSVP] ?? (props[PROP_DRAFT] ? "" : null);
+    const changed = snapshot === null ? [] : rsvpChanges(ev, snapshot);
+    if (snapshot !== null && (props[PROP_RSVP] ?? "") === rsvpSnapshot(ev)) return false;
+    await remember(env, ev, m.start_at);
+    if (!changed.length) return false;
+    await notify(env, rsvpNotice(ev, changed), ev.id);
+    return true;
+  }
 
   if (!known) {
     // Not seen before. Only a freshly created event is news; an old one is just remembered.
