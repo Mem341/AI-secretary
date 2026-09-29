@@ -4,11 +4,19 @@ import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
 import { Bitrix, type BxTask, STATUS } from "./client";
 import { isOverdue, kyivDateTime } from "./format";
-import { buildTaskReport } from "./report";
+import { buildTaskReport, REPORT_SCOPES, type ReportScope } from "./report";
 
 /** /bitrix: the task menu. Its buttons ("bx:…") work in plain code — no AI, nothing in Bitrix24 changes. */
 
-export type BitrixAction = "my" | "overdue" | "stats" | "report";
+export type BitrixAction = "my" | "overdue" | "stats" | `report:${ReportScope}`;
+
+/** «📊 Excel-звіт»: first what to put in it. */
+export async function showReportMenu(env: Env, chatId: number): Promise<void> {
+  const scopes = Object.entries(REPORT_SCOPES).map(([k, text]) => ({ text, callback_data: `bx:report:${k}` }));
+  await new Telegram(env).send(chatId, "📊 <b>Що вивантажити в Excel?</b>\n\nУ файлі: задача, проєкт, стадія, статус, стан за коментарями, відповідальний, постановник, дати, посилання й аналітика.", {
+    keyboard: [scopes.slice(0, 1), scopes.slice(1, 3), scopes.slice(3, 5), scopes.slice(5, 7)],
+  });
+}
 
 const MENU: InlineKeyboard = [
   [
@@ -57,9 +65,11 @@ export async function runBitrixAction(env: Env, chatId: number, action: BitrixAc
   const tg = new Telegram(env);
   const bx = new Bitrix(env);
   const me = await bx.me();
-  if (action === "report") {
-    const report = await buildTaskReport(env);
-    await tg.sendDocument(chatId, report.filename, report.file, report.caption);
+  if (action.startsWith("report:")) {
+    const scope = action.slice("report:".length) as ReportScope;
+    const report = await buildTaskReport(env, Date.now(), scope);
+    if (!report) await tg.send(chatId, `${REPORT_SCOPES[scope]}: задач немає.`);
+    else await tg.sendDocument(chatId, report.filename, report.file, report.caption);
     return;
   }
   if (action === "stats") {
