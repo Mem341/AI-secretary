@@ -48,7 +48,7 @@ Step-by-step instructions for each value, to send when the user does not have it
   ```
   The CLI needs a Vercel login or `VERCEL_TOKEN`. If you have neither, that is the one thing to ask for:
   "нужен Vercel-токен: vercel.com/account/tokens".
-- After the deploy, open `https://<domain>/api/setup`: it registers the Telegram webhook by itself.
+- After the deploy, open `https://<domain>/api/setup`: it registers the Telegram webhook by itself and redirects to the bot.
 
 ## 4. Report to the user — only in this format
 

@@ -14,15 +14,15 @@ Vercel only (no AWS, no Cloudflare): `.claude/skills/deploy-vercel/SKILL.md` (`/
 
 The skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
 the JSON of a Google "Desktop app" OAuth client (`GOOGLE_CLIENT_JSON`, no redirect URI) — validates them, and never asks about optional extras.
-The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, the `/api/setup` page registers the Telegram
-webhook and shows what is left to configure (Google, Gmail push, Zoom).
+The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, opening `/api/setup` registers the Telegram
+webhook and redirects to the bot; `/api/health` shows the state.
 
 ## Layout
 
 - `api/` — Vercel Functions (thin wrappers); `vercel.json` — function limits, `/` redirect, daily cron.
-- `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap. `/api/setup` shows
-  only plain-language status cards (bot works, Google connected) and buttons; how-tos live in `docs/tutorial.md`
-  (`TUTORIAL_URL`), machine checks in `/api/health`. Keep technical details off that page.
+- `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap. `/api/setup` only
+  registers the Telegram webhook and redirects to the bot (no status page, no how-tos); machine checks are
+  `/api/health`.
 - `src/jobs.ts` — background jobs (run after the response, 3 attempts).
 - `src/agent/` — a strict port of the owner's n8n flows: `index.ts` (Normalize Input / Build Agent Context →
   Supervisor with `calendar_agent` and `gmail_agent` as tools → Parse Agent Output), `runner.ts` (tool-calling

@@ -73,8 +73,8 @@ If a check fails: say which item is wrong and why, and ask for that item only.
    Use `printf '%s' "$VALUE" | npx vercel env add NAME production` for the others. Nothing else is needed.
    Remove old `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` variables if the project has them.
 3. **Deploy to production.**
-4. **Open `https://<domain>/api/setup`.** The page registers the Telegram webhook by itself. The «Бот працює» card
-   must be green; the Google card turns green once the owner connects Google (Step 4).
+4. **Open `https://<domain>/api/setup`.** It registers the Telegram webhook and redirects to `t.me/<bot>`
+   (a "Бот не відповідає" page means the bot token is wrong).
    - If the page is a Vercel login screen, turn off Deployment Protection for production (Settings →
      Deployment Protection).
 5. **`curl https://<domain>/api/health`** → `"ok": true` and `"telegram_webhook": true`.
@@ -100,10 +100,10 @@ Include the bot's @username and the site URL. No explanations of internals, no a
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| /api/setup: "GOOGLE_CLIENT_JSON must be the content…" | The variable holds something other than the downloaded JSON. Set the whole file again. |
+| Any URL: "GOOGLE_CLIENT_JSON must be the content…" | The variable holds something other than the downloaded JSON. Set the whole file again. |
 | Google: «Доступ заблокирован… приложение тестируется», 403 `access_denied` | The consent screen of that Google Cloud project is in **Testing** and the account is not a test user. The client type (Desktop/Web) does not matter. Fix: Google Auth Platform → Audience → **Publish app** (or add the account under Test users). The app name shown there comes from Branding. |
 | Bot: «Google не прийняв цей код» | The code is single-use and lives a few minutes. Press «Підключити Google» again. |
 | «Доступ до Google втрачено» | Access was revoked, the consent screen is in Testing (7-day expiry), or the bot token / `ENCRYPTION_KEY` changed. Reconnect via `/settings`. |
-| Bot silent | /api/setup → the «Бот працює» card must be green. Check that `OWNER_TELEGRAM_ID` is the user's number, not the bot's. |
+| Bot silent | /api/setup must redirect to the bot and /api/health show `"telegram_webhook": true`. Check that `OWNER_TELEGRAM_ID` is the user's number, not the bot's. |
 | LLM errors in the bot | OpenRouter balance is empty, or `LLM_MODEL` / `AGENT_MODEL` / `VISION_MODEL` holds a wrong model id (the agents need a model with tool calling). |
 | Anything else | Vercel runtime logs. The bot also reports errors to its owner in the chat. |

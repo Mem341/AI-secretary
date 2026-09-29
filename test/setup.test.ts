@@ -70,7 +70,9 @@ describe("/api/setup", () => {
     ]);
     const { env } = testEnv({ GOOGLE_CLIENT_ID: "" });
 
-    const html = await (await setupPage(new Request("https://bot.test/api/setup"), env)).text();
+    const res = await setupPage(new Request("https://bot.test/api/setup"), env);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://t.me/my_secretary_bot?start=setup");
     expect(tgCalls(calls, "setWebhook")).toEqual([
       {
         url: "https://bot.test/api/telegram",
@@ -81,15 +83,6 @@ describe("/api/setup", () => {
       },
     ]);
     expect(tgCalls(calls, "setMyCommands")).toHaveLength(1);
-    expect(html).toContain("@my_secretary_bot");
-    expect(html).toContain("Бот працює");
-    expect(html).toContain("Google ще не налаштовано");
-    expect(html).toContain("docs/tutorial.md");
-    // Plain words only: no variable names, URLs of endpoints or other technical details.
-    expect(html).not.toMatch(/GOOGLE_CLIENT_JSON|OWNER_TELEGRAM_ID|api\/telegram|Pub\/Sub|вебхук/i);
-    expect(html).not.toContain("База даних");
-    expect(html).not.toContain("tg-secret");
-    expect(html).not.toContain(String(OWNER));
 
     // Opening the page again does not re-register the webhook.
     await setupPage(new Request("https://bot.test/api/setup"), env);
