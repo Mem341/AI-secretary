@@ -184,6 +184,7 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
       callbackData: cq.data ?? null,
       callbackId: cq.id,
       callbackMessageId: cq.message?.message_id ?? null,
+      callbackKeyboard: cq.message?.reply_markup?.inline_keyboard ?? null,
     },
     photoIds: [],
   });

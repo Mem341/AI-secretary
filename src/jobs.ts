@@ -6,7 +6,8 @@ import { type Env, gmailPushConfigured } from "./env";
 import { gmailSync } from "./google/gmailPush";
 import { reportWake, setupGoogleWake } from "./google/wake";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
-import { sendDigest, sendReminders } from "./google/reminders";
+import { digestByGoogle, sendDigest } from "./google/digest";
+import { sendReminders } from "./google/reminders";
 import { markUpcoming, startWatch, syncRecent } from "./google/sync";
 import { bytesToBase64 } from "./lib/crypto";
 import { logError } from "./lib/errors";
@@ -39,6 +40,8 @@ export type Job =
   | { type: "reminders" }
   /** /settings → reminders: set Google up as the clock again and say how it went. */
   | { type: "wake"; chatId: number }
+  /** /settings → ☀️ «Показати зараз»: the morning report right away. */
+  | { type: "digest"; chatId: number }
   /** A /bitrix menu button: task list, analytics or the Excel report. */
   | { type: "bitrix"; chatId: number; action: BitrixAction };
 
@@ -111,13 +114,18 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     }
     case "daily":
       if (!(await hasGoogleAuth(env))) return;
-      if (await digestEnabled(env)) await sendDigest(env).catch((err) => logError(env, "digest", err));
       await startWatch(env);
       await markUpcoming(env);
       // A Gmail watch lapses after 7 days; renewing daily keeps mail and reminders flowing, and new meetings of the
-      // coming week get their reminder emails.
+      // coming week get their reminder emails (and the morning report its signal for tomorrow).
       await setupGoogleWake(env).catch((err) => logError(env, "google.wake", err));
+      // The morning report comes at the owner's time through Google; this run is the fallback until Google wakes the bot.
+      if ((await digestEnabled(env)) && !(await digestByGoogle(env))) await sendDigest(env).catch((err) => logError(env, "digest", err));
       return;
+    case "digest":
+      return withTyping(env, job.chatId, async () => {
+        if (!(await sendDigest(env, Date.now(), job.chatId, true))) await new Telegram(env).send(job.chatId, "Немає даних для звіту.");
+      });
     case "gmail_sync":
       if (await hasGmailScope(env)) await gmailSync(env);
       return;

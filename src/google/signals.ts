@@ -16,6 +16,17 @@ const NAME = "AI-secretary · сигнали";
 const FOR = "aisFor";
 /** aisFor of the test signal from «🔁 Перевірити» (no meeting behind it). */
 export const TEST_PREFIX = "test:";
+/** aisFor of the morning report's signal for a day ("digest:2026-10-01"), google/digest.ts. */
+export const DIGEST_PREFIX = "digest:";
+
+/** One signal wanted in the calendar: key = the meeting id (or a digest key), an email at each of `minutes`. */
+export interface Signal {
+  key: string;
+  summary: string;
+  start: number;
+  end: number;
+  minutes: number[];
+}
 
 /** The shadow's id for a meeting: fixed, so a move just rewrites it (hex fits Google's a–v, 0–9 id alphabet). */
 export function shadowId(meetingId: string): string {
@@ -33,28 +44,26 @@ export async function signalCalendar(env: Env): Promise<string | null> {
   return id;
 }
 
-/** The meeting a signal stands for (null when the id is not one of the bot's shadows). */
-export async function signalTarget(env: Env, eventId: string): Promise<string | null> {
+/** The bot's signal event with this id and its calendar (null when the id is not one of the bot's signals). */
+export async function signalEvent(env: Env, eventId: string): Promise<{ cal: Calendar; ev: GEvent } | null> {
   if (!/^ais[0-9a-f]{26}$/.test(eventId)) return null;
   const sc = (await loadOwnerSettings(env).catch(() => ({ sc: undefined }))).sc;
   if (!sc) return null;
-  const shadow = await new Calendar(env, sc).getEvent(eventId).catch(() => null);
-  return shadow?.extendedProperties?.private?.[FOR] ?? null;
+  const cal = new Calendar(env, sc);
+  const ev = await cal.getEvent(eventId).catch(() => null);
+  return ev ? { cal, ev } : null;
+}
+
+/** What a signal stands for: the meeting id, or a test / digest key (null when the id is not one of the bot's). */
+export async function signalTarget(env: Env, eventId: string): Promise<string | null> {
+  return (await signalEvent(env, eventId))?.ev.extendedProperties?.private?.[FOR] ?? null;
 }
 
 /**
- * Brings the shadows in step with the meetings: creates/moves those of \`upcoming\`, deletes those of \`gone\`, and — for a
- * full pass — every shadow whose meeting is no longer upcoming. Returns how many writes were made.
+ * Brings the signals in step: creates/moves those of \`wanted\` (meeting shadows, the morning report's), deletes those of
+ * \`gone\` meetings, and — for a full pass — every signal no longer wanted. Returns how many writes were made.
  */
-export async function syncSignals(
-  env: Env,
-  calendarId: string,
-  upcoming: { ev: GEvent; start: number; end: number }[],
-  gone: string[],
-  marks: number[],
-  full: boolean,
-  now = Date.now(),
-): Promise<number> {
+export async function syncSignals(env: Env, calendarId: string, wanted: Signal[], gone: string[], full: boolean, now = Date.now()): Promise<number> {
   const sig = new Calendar(env, calendarId);
   let existing: GEvent[];
   try {
@@ -76,16 +85,17 @@ export async function syncSignals(
     throw err;
   }
   const byId = new Map(existing.map((e) => [e.id, e]));
-  const overrides = marks.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
   const key = (start: string | undefined, r: GEvent["reminders"]) => `${start ? Date.parse(start) : ""}|${JSON.stringify(r?.overrides ?? [])}`;
   const keep = new Set<string>();
   let writes = 0;
-  for (const { ev, start, end } of upcoming) {
-    const id = shadowId(ev.id);
+  for (const w of wanted) {
+    const id = shadowId(w.key);
     keep.add(id);
+    const { start, end } = w;
+    const overrides = w.minutes.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
     const body = {
       id,
-      summary: `🔔 ${ev.summary ?? "зустріч"}`,
+      summary: w.summary,
       start: { dateTime: new Date(start).toISOString() },
       end: { dateTime: new Date(end).toISOString() },
       // A shadow deleted before keeps its id as a cancelled event: writing it again must bring it back.
@@ -93,10 +103,10 @@ export async function syncSignals(
       transparency: "transparent",
       visibility: "private",
       reminders: { useDefault: false, overrides },
-      extendedProperties: { private: { [FOR]: ev.id } },
+      extendedProperties: { private: { [FOR]: w.key } },
     };
     const have = byId.get(id);
-    if (have && key(have.start?.dateTime, have.reminders) === key(body.start.dateTime, body.reminders)) continue;
+    if (have && have.summary === body.summary && key(have.start?.dateTime, have.reminders) === key(body.start.dateTime, body.reminders)) continue;
     await sig.putEvent(body as GEvent & Record<string, unknown>);
     writes++;
   }

@@ -241,7 +241,9 @@ describe("each chosen time: a Telegram message AND a Google Calendar notificatio
     ]);
     // Its shadow: the email signals that wake the bot for Telegram, at the same times; the stale shadow is gone.
     const { shadowId } = await import("../src/google/signals");
-    expect([...shadows.keys()]).toEqual([shadowId("one")]);
+    // (plus the morning report's signals for today and tomorrow)
+    const meetingShadows = [...shadows.entries()].filter(([, v]) => !String((v.extendedProperties as { private: { aisFor: string } }).private.aisFor).startsWith("digest:"));
+    expect(meetingShadows.map(([k]) => k)).toEqual([shadowId("one")]);
     expect(shadows.get(shadowId("one"))).toMatchObject({
       summary: "🔔 Планування",
       transparency: "transparent",
@@ -338,7 +340,7 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
     const report = String(tgCalls(calls, "sendMessage").at(-1)!.text);
     expect(report).toContain("✅ <b>Pub/Sub");
     expect(report).toContain("Тест запущено");
-    const [sid, test] = [...shadows.entries()][0]!;
+    const [sid, test] = [...shadows.entries()].find(([, v]) => String((v.extendedProperties as { private: { aisFor: string } }).private.aisFor).startsWith("test:"))!;
     expect(test).toMatchObject({ status: "confirmed", reminders: { overrides: [{ method: "email", minutes: 3 }] } });
 
     const { handleReminderEmail } = await import("../src/google/reminders");
@@ -356,6 +358,6 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
     } as never;
     expect(await handleReminderEmail(env, email)).toBe(true);
     expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Тест пройдено");
-    expect(shadows.size).toBe(0);
+    expect(shadows.has(sid)).toBe(false);
   });
 });

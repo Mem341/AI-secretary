@@ -7,18 +7,10 @@ import { hiddenData } from "../telegram/hidden";
 import { Calendar, type GEvent } from "./calendar";
 import { loadOwnerSettings, type OwnerSettings } from "./oauth";
 import { wakeReady } from "./pubsub";
-import { signalCalendar, signalTarget, syncSignals, TEST_PREFIX } from "./signals";
+import { digestSignals, loadDigestChoice, sendDigest } from "./digest";
+import { DIGEST_PREFIX, type Signal, signalCalendar, signalEvent, syncSignals, TEST_PREFIX } from "./signals";
 import { type GMessage, Gmail, toMailMessage } from "./gmail";
 import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
-
-export function formatAgenda(meetings: Meeting[], now: Date): string {
-  return meetings
-    .map((m) => {
-      const where = m.meet_url ? " · онлайн" : m.location ? ` · ${esc(m.location)}` : "";
-      return `• <b>${esc(formatRange(new Date(m.start_at), new Date(m.end_at), now))}</b> — ${esc(m.title ?? "без назви")}${where}`;
-    })
-    .join("\n");
-}
 
 /**
  * Private event property: "start:minutes" of the last reminder sent (e.g. "1790000000000:10"). A moved meeting has
@@ -167,16 +159,19 @@ export async function applyEmailReminders(env: Env, events?: GEvent[], now = Dat
       })
     ).items;
   // Telegram signals need Google to wake the bot; Calendar notifications work without it.
-  const telegram = ch.t && marks.length > 0 && (await wakeReady(env));
-  const signals = telegram ? await signalCalendar(env) : null;
+  const awake = await wakeReady(env);
+  const telegram = ch.t && marks.length > 0 && awake;
+  // The morning report at the owner's time is a signal too.
+  const morning = awake ? digestSignals(await loadDigestChoice(env), now) : [];
+  const signals = telegram || morning.length ? await signalCalendar(env) : null;
   const want = desiredReminders(marks, { t: telegram, c: ch.c }, !!signals);
   const done = new Set<string>();
-  const upcoming: { ev: GEvent; start: number; end: number }[] = [];
+  const upcoming: Signal[] = [];
   let changed = 0;
   for (const ev of list) {
     const change = eventToChange(ev);
     if (change.kind !== "upsert" || change.meeting.end_at < now) continue;
-    upcoming.push({ ev, start: change.meeting.start_at, end: change.meeting.end_at });
+    if (telegram) upcoming.push({ key: ev.id, summary: `🔔 ${ev.summary ?? "зустріч"}`, start: change.meeting.start_at, end: change.meeting.end_at, minutes: marks });
     const target = ev.recurringEventId ?? ev.id;
     if (done.has(target)) continue;
     done.add(target);
@@ -188,7 +183,7 @@ export async function applyEmailReminders(env: Env, events?: GEvent[], now = Dat
   }
   if (signals) {
     const gone = list.filter((ev) => eventToChange(ev).kind !== "upsert").map((ev) => ev.id);
-    changed += await syncSignals(env, signals, upcoming, gone, marks, !events, now).catch((err) => {
+    changed += await syncSignals(env, signals, [...upcoming, ...morning], gone, !events, now).catch((err) => {
       console.warn("signals:", err instanceof Error ? err.message : err);
       return 0;
     });
@@ -225,9 +220,19 @@ export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now(
   const id = eventIdFromEmail(m);
   if (!id) return false;
   // A signal (the shadow in the bot's signal calendar) stands for the owner's meeting — whatever the subject's language.
-  const target = await signalTarget(env, id);
+  const signal = await signalEvent(env, id);
+  const target = signal?.ev.extendedProperties?.private?.aisFor ?? null;
   if (!target && !REMINDER_SUBJECT.test(mail.subject.trim())) return false;
   const gmail = new Gmail(env);
+  if (target?.startsWith(DIGEST_PREFIX) && signal) {
+    // One report per day whichever copy of the bot got the email: claimed on the signal first.
+    const props = signal.ev.extendedProperties?.private ?? {};
+    if (!props.aisSent && firstTime(`remind:${target}`, DAY) && (await signal.cal.claimPrivate(signal.ev, { ...props, aisSent: "1" }))) {
+      await sendDigest(env, now);
+    }
+    await gmail.trash(m.id).catch(() => undefined);
+    return true;
+  }
   if (target?.startsWith(TEST_PREFIX)) {
     const started = Number(target.slice(TEST_PREFIX.length));
     if (firstTime(`remind:${target}`, DAY)) {
@@ -252,15 +257,5 @@ export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now(
     await sendReminder(env, cal, new Telegram(env), ev, change.meeting, mark, now);
   }
   await gmail.trash(m.id).catch(() => undefined);
-  return true;
-}
-
-/** Morning digest from the daily cron: today's remaining meetings. Nothing is sent on an empty day. */
-export async function sendDigest(env: Env, now = Date.now()): Promise<boolean> {
-  const p = kyivParts(new Date(now));
-  const endOfDay = kyivLocalToDate(p.year, p.month, p.day).getTime() + DAY;
-  const meetings = await listMeetings(env, now, endOfDay);
-  if (!meetings.length) return false;
-  await new Telegram(env).send(env.OWNER_TELEGRAM_ID, `☀️ <b>Сьогодні у вас ${meetings.length} ${meetings.length === 1 ? "зустріч" : meetings.length < 5 ? "зустрічі" : "зустрічей"}:</b>\n\n${formatAgenda(meetings, new Date(now))}`);
   return true;
 }
