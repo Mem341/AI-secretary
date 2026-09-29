@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { Telegram } from "../telegram/api";
-import { completeAuth, connectLink, forgetGoogleAuth } from "./oauth";
+import { completeAuth, connectLink, forgetGoogleAuth, missingScopes } from "./oauth";
 
 export type ConnectResult = "connected" | "no_calendar";
 
@@ -16,6 +16,15 @@ export async function connectWithCode(env: Env, code: string): Promise<ConnectRe
       keyboard: [[{ text: "🔗 Спробувати ще раз", url: await connectLink(env) }]],
     });
     return "no_calendar";
+  }
+  const missing = missingScopes(scope);
+  if (missing.length) {
+    // Google shows each permission as its own checkbox, unticked: say which ones were left out.
+    await new Telegram(env).send(
+      env.OWNER_TELEGRAM_ID,
+      `⚠️ Google підключено, але без цих галочок:\n${missing.map((m) => `• ${m}`).join("\n")}\n\nБез них не працюють нагадування в Telegram. Натисніть кнопку й на екрані Google поставте <b>«Вибрати все» (Select all)</b>.`,
+      { keyboard: [[{ text: "🔄 Підключити з усіма галочками", url: await connectLink(env) }]] },
+    );
   }
   await env.jobs.send({ type: "connected", gmail: scope.includes("gmail.modify") });
   return "connected";
