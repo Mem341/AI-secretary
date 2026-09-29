@@ -13,6 +13,12 @@ Google Calendar from Telegram. Ask only for what they alone can provide; do ever
 
 ## Rules of conduct
 
+- **`AGENTS.md` in the repo root is binding.** The project is finished: never port it, never propose services,
+  databases or frameworks, never ask technical questions or for plan approval. Ask only for the values in Step 1
+  and report in the "Реализовано / Не реализовано" format from `AGENTS.md`.
+- **A copy with `wrangler.jsonc`, D1 or SQL migrations is outdated:** use `main` of
+  github.com/Mem341/AI-secretary.
+
 - **Talk in the user's language.** Russian or Ukrainian if they write that way.
 - **Ask for exactly the four items in Step 1, in one message.** Do not ask about anything else:
   - not Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
@@ -80,8 +86,9 @@ On a failed check:
    - framework preset **Other**, no build command, root `/`;
    - project name `ai-secretary` unless the user chose one.
 
-   If the tools can't create it, hand the user the **Deploy with Vercel** button from README.md. It asks for the
-   variables.
+   If Vercel cannot reach the GitHub repo (`repo_no_access`, another GitHub account), do not ask: deploy from
+   files — clone `main`, `npx vercel link --yes --project ai-secretary`, add the variables, `npx vercel deploy
+   --prod --yes`. No Git connection is needed. Ask only for a Vercel token if the CLI is not logged in.
 2. **Set Production variables:**
    - `TELEGRAM_BOT_TOKEN`
    - `OWNER_TELEGRAM_ID`
@@ -122,18 +129,9 @@ If the page is a Vercel login screen, production is behind Deployment Protection
 
 ## Step 6 — final report to the user
 
-Keep it short:
-- the bot's @username and the site URL;
-- what was verified;
-- anything left for the user to do (for example, adding the redirect URI).
-
-Then one line on optional extras:
-- Zoom;
-- instant new-mail notices (Pub/Sub);
-- profile and defaults for event descriptions: `OWNER_NAME` (default: their Telegram name), `OWNER_POSITION`,
-  `OWNER_PHONE`, `DEFAULT_DURATION_MIN`, `DEFAULT_FORMAT`, `DEFAULT_ADDRESS`, and `LLM_MODEL`.
-
-They can be added any time; `/api/setup` shows the steps.
+Only in the format from `AGENTS.md` §4: «Реализовано» (✅ lines) and «Не реализовано» (❌ what — the one action the
+user must take). Add the bot's @username and the site URL. No explanations of internals, no alternatives, no
+questions.
 
 ## Troubleshooting
 

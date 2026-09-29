@@ -1,27 +1,25 @@
 # AI-secretary
 
-Open-source personal Telegram secretary: anyone deploys their own copy (Vercel or AWS); each copy serves one owner
+Open-source personal Telegram secretary: anyone deploys their own copy on **Vercel** (the only platform); each copy serves one owner
 (`OWNER_TELEGRAM_ID`). Creates Google Calendar meetings from text, voice, forwarded chats and screenshots, reports
 calendar changes, reschedules/cancels by reply, and works with Gmail. Node.js + TypeScript, **no database**,
 OpenRouter (LLM, and speech-to-text for voice), optional Zoom.
 
 ## Deploying
 
-The same code runs on both platforms; pick the skill by what the user asked for:
+**Read `AGENTS.md` first.** The project is finished: never port or redesign it, ask the user only for env values,
+report as "Реализовано / Не реализовано".
 
-- **Vercel** → `.claude/skills/deploy-vercel/SKILL.md` (`/deploy-vercel`).
-- **AWS** (Amazon, Lambda) → `.claude/skills/deploy-aws/SKILL.md` (`/deploy-aws`); background: `docs/deploy-aws.md`.
-- Platform not named → ask once: Vercel (fastest, one button) or AWS (their own AWS account).
+Vercel only (no AWS, no Cloudflare): `.claude/skills/deploy-vercel/SKILL.md` (`/deploy-vercel`).
 
-Each skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
+The skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
 Google OAuth client ID + secret — validates them, and never asks about optional extras.
 The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, the `/api/setup` page registers the Telegram
 webhook and shows what is left to configure (Google, Gmail push, Zoom).
 
 ## Layout
 
-- `api/` — Vercel Functions (thin wrappers). `src/aws.ts` — AWS Lambda adapter (Function URL + cron handler).
-  `src/router.ts` — the same endpoints routed in code (AWS, any Node host). `aws/template.yaml` — AWS SAM stack.
+- `api/` — Vercel Functions (thin wrappers); `vercel.json` — function limits, `/` redirect, daily cron.
 - `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap.
 - `src/jobs.ts` — background jobs (run after the response, 3 attempts).
 - `src/bot/` — `meetings.ts` (meeting cards + the text router), `actions.ts` (reschedule/cancel/note by reply),
@@ -50,6 +48,6 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
   must still start without them; new features must be optional or derived.
 - Anything that writes to the calendar or sends/removes mail goes through a confirmation card; read-only and
   easily reversible actions may run at once. Keep the bot's own Calendar writes silent: set `aisStart` in the same write (or `aisBotCancel` before a delete).
-- Keep the Vercel `api/*` files, `src/router.ts` and the docs' URLs in sync when adding an endpoint.
+- Keep the Vercel `api/*` files and the docs' URLs in sync when adding an endpoint. Do not add other platforms.
 - Compiles to CommonJS (`tsconfig.json`), which Vercel's Node runtime needs for extensionless imports.
-- Check before pushing: `npm run typecheck && npm test && npm run build:aws` (tests mock all outbound HTTP; `test/helpers.ts` has a fake Telegram that keeps messages, entities and the pin).
+- Check before pushing: `npm run typecheck && npm test` (tests mock all outbound HTTP; `test/helpers.ts` has a fake Telegram that keeps messages, entities and the pin).

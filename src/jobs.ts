@@ -13,7 +13,7 @@ import { esc, Telegram } from "./telegram/api";
 import type { TgMessage } from "./telegram/types";
 
 /**
- * Background jobs. They run after the HTTP response (Vercel `waitUntil`, AWS response streaming), with retries.
+ * Background jobs. They run after the HTTP response (Vercel `waitUntil`), with retries.
  * There is no database: a job carries everything it needs.
  */
 export type Job =

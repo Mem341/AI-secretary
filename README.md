@@ -5,10 +5,12 @@
 отримують запрошення на пошту. Бот одразу повідомляє про зміни в календарі, переносить і скасовує зустрічі у
 відповідь на повідомлення, читає й відповідає на листи Gmail.
 
-Кожен розгортає **власну копію** — на **Vercel** (одна кнопка) або в **AWS** (свій акаунт) — безкоштовно для
-однієї людини, без серверів.
+Кожен розгортає **власну копію на Vercel** (одна кнопка) — безкоштовно для однієї людини, без серверів.
 
-**Node.js + TypeScript · Vercel Functions або AWS Lambda · OpenRouter · Zoom (необовʼязково) · без бази даних**
+**Node.js + TypeScript · Vercel Functions · OpenRouter · Zoom (необовʼязково) · без бази даних**
+
+> 🤖 **ШІ-агентам, які розгортають бота:** спершу прочитайте [AGENTS.md](AGENTS.md). Проєкт готовий — нічого не
+> переносити й не перепроєктовувати; у користувача питати лише значення змінних середовища.
 
 > 🔒 **Кожна копія служить рівно одній людині** — тій, чий Telegram ID вказано в `OWNER_TELEGRAM_ID`.
 > Повідомлення від усіх інших бот мовчки ігнорує: сторонній навіть не дізнається, що бот працює.
@@ -18,8 +20,6 @@
 <a id="deploy"></a>
 
 ## 🚀 Розгортання за 5 хвилин
-
-### Vercel
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY%2CGOOGLE_CLIENT_ID%2CGOOGLE_CLIENT_SECRET&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key%2C+Google+OAuth+client+ID+and+secret&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary)
 
@@ -39,24 +39,10 @@
 3. **Відкрийте свій сайт** `https://<ваш-проєкт>.vercel.app` — відкриється сторінка налаштування. Вона сама
    підключить Telegram-бота і покаже ваш **Redirect URI** — додайте його в Google-клієнт (Clients → Authorized
    redirect URIs).
-4. **Напишіть своєму боту `/start`**, заповніть профіль і натисніть «Підключити Google Calendar». Готово.
+4. **Напишіть своєму боту `/start`** і натисніть «Підключити Google». Готово.
 
 > 💡 Можна доручити все агенту **Claude Code** з підключеним Vercel MCP: «розгорни бота на Vercel». Він візьме
 > інструкцію з `.claude/skills/deploy-vercel/SKILL.md`, спитає рівно ці 4 речі, перевірить їх і зробить решту сам.
-
-### AWS
-
-Той самий код працює як AWS Lambda (Function URL + щоденний cron через EventBridge), розгортається через AWS SAM:
-
-```bash
-npm ci && npm run build:aws
-cd aws && cp samconfig.toml.example samconfig.toml   # впишіть ті самі 4 речі
-sam deploy
-```
-
-Далі — так само: відкрийте `FunctionUrl` з виводу, сторінка налаштування доведе до кінця. Детально:
-[docs/deploy-aws.md](docs/deploy-aws.md). Агенту Claude Code достатньо сказати «розгорни бота на AWS» — інструкція
-для нього в `.claude/skills/deploy-aws/SKILL.md`.
 
 ### Необовʼязкові змінні
 
@@ -69,7 +55,7 @@ sam deploy
 | `DEFAULT_DURATION_MIN`, `DEFAULT_FORMAT`, `DEFAULT_ADDRESS` | тривалість (60), формат (`offline` / `google_meet` / `zoom`), адреса офлайн-зустрічей |
 | `ENCRYPTION_KEY` | власний ключ шифрування доступу до Google (інакше виводиться з токена бота) |
 | `CRON_SECRET` | закрити щоденний cron від сторонніх викликів |
-| `PUBLIC_URL` | власний домен замість `*.vercel.app` / Function URL |
+| `PUBLIC_URL` | власний домен замість `*.vercel.app` |
 
 ---
 
@@ -107,15 +93,15 @@ sam deploy
 
 ```
 Telegram ─ webhook ─▶ /api/telegram ─────┐
-Google   ─ push ────▶ /api/gcal-push ────┤  Vercel Functions   ┌─▶ Google Calendar / Gmail API
-Pub/Sub  ─ Gmail ───▶ /api/gmail-push ───┤        або          ├─▶ OpenRouter (LLM)
-Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─ AWS Lambda ────────┼─▶ OpenRouter (голос → текст)
+Google   ─ push ────▶ /api/gcal-push ────┤                     ┌─▶ Google Calendar / Gmail API
+Pub/Sub  ─ Gmail ───▶ /api/gmail-push ───┤  Vercel Functions   ├─▶ OpenRouter (LLM)
+Браузер  ─ OAuth ───▶ /api/oauth/* ──────┼─────────────────────┼─▶ OpenRouter (голос → текст)
 Cron (щодня) ───────▶ /api/cron/daily ───┤                     └─▶ Zoom
 Ви ─────────────────▶ /api/setup ────────┘
 ```
 
 - **Миттєва відповідь.** Функція одразу відповідає Telegram, а LLM, транскрибація й синхронізація виконуються
-  після відповіді (`waitUntil` на Vercel, response streaming на AWS).
+  після відповіді (`waitUntil`).
 - **Push замість опитування.** `events.watch` → Google повідомляє про зміни → бот бере події, змінені за останні
   хвилини, і одразу пише вам про нові, перенесені чи скасовані (зроблені не ботом). Gmail — так само через Cloud
   Pub/Sub. Щоденний cron продовжує підписки.
@@ -126,7 +112,7 @@ Cron (щодня) ───────▶ /api/cron/daily ───┤         
 <details>
 <summary><b>Без бази даних: де що живе</b></summary>
 
-Функції Vercel і AWS Lambda нічого не памʼятають між запитами, тож бот тримає потрібне там, де воно й так є:
+Функції Vercel нічого не памʼятають між запитами, тож бот тримає потрібне там, де воно й так є:
 
 | Що | Де |
 |---|---|
@@ -146,8 +132,6 @@ Cron (щодня) ───────▶ /api/cron/daily ───┤         
 
 ```
 api/                 Vercel Functions (тонкі обгортки)
-src/aws.ts           AWS Lambda (Function URL + cron); aws/template.yaml — стек AWS SAM
-src/router.ts        ті самі адреси для AWS та будь-якого Node-хостингу
 src/app.ts           HTTP-обробники, сторінка налаштування, фонові задачі
 src/jobs.ts          фонові задачі з повторами
 src/session.ts       коротка памʼять запущеної функції (серії повідомлень), сама очищується
@@ -172,7 +156,6 @@ test/                тести (Telegram і Google замокані)
 npm ci
 npm run typecheck
 npm test          # усі зовнішні HTTP (Telegram, Google, OpenRouter) замокані
-npm run build:aws # збірка Lambda-бандла для AWS
 npm run dev       # локальний запуск через Vercel CLI
 ```
 
