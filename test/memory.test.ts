@@ -64,23 +64,24 @@ describe("conversation memory in the hidden Drive folder", () => {
     restart();
     await handleUpdate(env, say("дякую"));
     await runJobs(env, jobs);
-    expect(String(seen[1]!.messages[0]!.content)).toContain("Бот: Привіт! Чим допомогти?");
+    expect(seen[1]!.messages.map((m) => m.content)).toContain("Привіт! Чим допомогти?");
   });
 
-  it("keeps the last N messages the owner chose; the oldest drop out", async () => {
+  it("keeps the last N question–answer pairs the owner chose; the oldest drop out", async () => {
     await connectGoogle({ scope: DRIVE_SCOPE });
     const drive = fakeDrive();
     mockFetch([drive.route, openRouter(() => llmText("ok"))]);
     const { env, jobs } = testEnv();
     await saveOwnerSettings(env, { m: 20 });
-    for (let i = 1; i <= 12; i++) {
+    for (let i = 1; i <= 22; i++) {
       await handleUpdate(env, say(`повідомлення ${i}`));
       await runJobs(env, jobs);
     }
+    // 20 pairs = 40 messages: the 21st and 22nd pushed out the first two.
     const log = drive.json().log as { who: string; text: string }[];
-    expect(log).toHaveLength(20);
+    expect(log).toHaveLength(40);
     expect(log[0]).toMatchObject({ who: "u", text: "повідомлення 3" });
-    expect(log.at(-2)).toMatchObject({ who: "u", text: "повідомлення 12" });
+    expect(log.at(-2)).toMatchObject({ who: "u", text: "повідомлення 22" });
   });
 
   it("facts the agent writes stay after /reset and go into the next prompt", async () => {
@@ -115,13 +116,13 @@ describe("conversation memory in the hidden Drive folder", () => {
     await handleUpdate(env, press("set:mem", msg));
     const view = tgCalls(calls, "editMessageText").at(-1)!;
     expect(String(view.text)).toContain("Як це працює");
-    expect(String(view.text)).toContain("останні <b>100</b> повідомлень");
+    expect(String(view.text)).toContain("останні <b>100</b> питань-відповідей");
     expect(String(view.text)).toContain("Google Drive");
     expect(String(view.text)).not.toContain("тимчасова");
     const buttons = (view.reply_markup as { inline_keyboard: { callback_data?: string }[][] }).inline_keyboard.flat().map((b) => b.callback_data);
     expect(buttons).toEqual(["set:mem:20", "set:mem:50", "set:mem:100", "set:mem:facts", "set:mem:clear", "set:back"]);
     await handleUpdate(env, press("set:mem:50", msg));
-    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("останні <b>50</b> повідомлень");
+    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("останні <b>50</b> питань-відповідей");
   });
 
   it("without the Drive permission the memory is temporary, and the section says how to fix it", async () => {
@@ -183,5 +184,27 @@ describe("old requests in the memory are never carried out again", () => {
     expect(deletionAllowed("удали все встречи на сегодня", 0)).toMatch(/confirmation/);
     expect(deletionAllowed("так", 0)).toBeNull();
     expect(deletionAllowed("так", 3)).toBeNull();
+  });
+});
+
+describe("one session: the bot's question gets the owner's answer", () => {
+  it("«Заголовок ТЕСТ» after the task agent asked for a title goes back to that agent, with the conversation", async () => {
+    await connectGoogle();
+    const seen: LlmRequest[] = [];
+    mockFetch([
+      (url) => (url.hostname === "b24.test" ? Response.json({ result: {} }) : undefined),
+      openRouter((_r, i) => llmText(i === 1 ? "Щоб створити задачу, мені потрібна назва. Яка назва?" : "Задачу «ТЕСТ» створено."), seen),
+    ]);
+    const { env, jobs } = testEnv({ BITRIX_WEBHOOK_URL: "https://b24.test/rest/1/abc/" });
+    await handleUpdate(env, say("постав задачу Вероніці, дедлайн післязавтра"));
+    await runJobs(env, jobs);
+    await handleUpdate(env, say("Заголовок ТЕСТ"));
+    await runJobs(env, jobs);
+    const second = seen[1]!;
+    expect(String(second.messages[0]!.content)).toContain("# Bitrix24 Task Agent");
+    expect(second.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(String(second.messages[1]!.content)).toContain("постав задачу Вероніці");
+    expect(second.messages[2]!.content).toContain("Яка назва?");
+    expect(lastBotMessage("ТЕСТ").text).toContain("створено");
   });
 });

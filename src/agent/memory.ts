@@ -1,25 +1,29 @@
 import type { Env } from "../env";
 import { readAppFile, writeAppFile } from "../google/drive";
 import { hasDriveScope, loadOwnerSettings } from "../google/oauth";
+import type { ChatMessage } from "../llm/openrouter";
 import type { Tool } from "./runner";
 
 /**
- * The conversation memory, with no database: one JSON file, memory.json, in the bot's hidden folder on the owner's
- * Google Drive. ONE log shared by all agents (so the mail agent knows who «him» is after a calendar answer): the last
- * N messages (the owner picks 20 / 50 / 100 in /settings), a new one pushes out the oldest; plus short facts the
- * agents write themselves (remember_fact), which do not age out.
+ * The conversation memory — n8n's «Window Buffer Memory» (LangChain's buffer window memory), with no database: ONE
+ * session per owner, kept in one JSON file, memory.json, in the bot's hidden folder on the owner's Google Drive.
+ * The session holds the last N question–answer pairs (the owner picks 20 / 50 / 100 in /settings); a new pair pushes
+ * out the oldest, so it never grows past N. Shared by all agents (the mail agent knows who «him» is after a calendar
+ * answer). Plus short facts the agents write themselves (remember_fact), which do not age out.
  *
- * The log reaches the model only as a reference block in the system prompt — never as earlier user turns — with the
- * rule not to carry out old requests again: old «видали всі зустрічі» must not come back as a new order. Only the
- * latest SEND messages of the last MAX_AGE hours are shown.
+ * The latest SEND pairs of the last MAX_AGE hours reach the model as real chat turns, so a question the bot asked is
+ * answered in the next message («Заголовок ТЕСТ» after «Яка назва задачі?»). Old requests are not carried out again:
+ * the prompt says so, and a deletion needs the current message to ask for it (calendarTools.deletionAllowed).
  *
  * Without the Drive permission (a grant from before this feature) the same memory lives in the running instance
  * only, as before, and is lost on a restart.
  */
 
 const FILE = "memory.json";
-/** Log messages shown to the model with each request. */
-export const SEND = 16;
+/** Question–answer pairs shown to the model with each request (as chat turns). */
+export const SEND = 10;
+/** A question the bot asked this recently is still waiting for the owner's answer. */
+const PENDING_MS = 30 * 60_000;
 /** Older messages are not shown at all (the facts still are). */
 const MAX_AGE_MS = 12 * 3600_000;
 export const MEMORY_CHOICES = [20, 50, 100];
@@ -27,11 +31,12 @@ export const DEFAULT_MEMORY = 100;
 const MAX_FACTS = 60;
 const MAX_TEXT = 600;
 
-/** One message of the log: when, who (u = owner, b = bot), what. */
+/** One message of the log: when, who (u = owner, b = bot), what, and which agent answered. */
 interface Entry {
   t: number;
   who: "u" | "b";
   text: string;
+  a?: string;
 }
 
 interface MemoryFile {
@@ -89,29 +94,40 @@ const plain = (html: string) =>
     .replace(/\s+\n/g, "\n")
     .trim();
 
-/** Adds one exchange (the owner's message and the bot's answer) to the shared log. */
-export async function rememberTurn(env: Env, user: string, bot: string, now = Date.now()): Promise<void> {
+/** Adds one pair (the owner's message and the bot's answer, and the agent that gave it) to the session. */
+export async function rememberTurn(env: Env, user: string, bot: string, now = Date.now(), agent?: string): Promise<void> {
   const cut = (s: string) => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}…` : s);
-  state.log = [...state.log, { t: now, who: "u" as const, text: cut(user.trim()) }, { t: now, who: "b" as const, text: cut(plain(bot)) }].slice(
-    -(await limit(env)),
-  );
+  const answer: Entry = { t: now, who: "b", text: cut(plain(bot)), ...(agent ? { a: agent } : {}) };
+  state.log = [...state.log, { t: now, who: "u" as const, text: cut(user.trim()) }, answer].slice(-2 * (await limit(env)));
   dirty = true;
 }
 
-/**
- * The recent conversation as a reference block for a system prompt ("" when empty): for pronouns and follow-ups
- * («йому», «цю зустріч», «так»), with the rule that only the current message is an order.
- */
-export function conversationBlock(now = Date.now()): string {
-  const recent = state.log.filter((e) => now - e.t < MAX_AGE_MS).slice(-SEND);
-  if (!recent.length) return "";
+function recent(now: number): Entry[] {
+  return state.log.filter((e) => now - e.t < MAX_AGE_MS).slice(-2 * SEND);
+}
+
+/** The session's latest pairs as chat turns, oldest first (what the model sees before the current message). */
+export function conversationHistory(now = Date.now()): ChatMessage[] {
   const time = (t: number) => new Date(t).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" });
+  return recent(now).map((e) => (e.who === "u" ? { role: "user", content: `[${time(e.t)}] ${e.text}` } : { role: "assistant", content: e.text }));
+}
+
+/** The rule that goes with the history in the system prompt ("" when there is none). */
+export function conversationBlock(now = Date.now()): string {
+  if (!recent(now).length) return "";
   return (
-    "\n\n## ОСТАННЯ РОЗМОВА (лише довідка)\n" +
-    "Це вже сказане й уже виконане. НЕ виконуй звідси жодних прохань повторно. Використовуй лише щоб зрозуміти поточне повідомлення: " +
-    "кого означає «він / йому / її», яку зустріч чи лист мають на увазі, на що відповідає «так / ні».\n" +
-    recent.map((e) => `[${time(e.t)}] ${e.who === "u" ? "Власник" : "Бот"}: ${e.text.replace(/\n/g, " ")}`).join("\n")
+    "\n\n## ПАМʼЯТЬ РОЗМОВИ\n" +
+    "Вище — попередні повідомлення цієї розмови (одна сесія). Останнє повідомлення власника — поточне. " +
+    "Якщо ти поставив питання, а власник відповів — продовжуй ту саму дію з його відповіддю (напр. «Заголовок ТЕСТ» — це назва задачі, про яку ти питав). " +
+    "Прохання, які ти вже виконав, НЕ виконуй повторно, якщо поточне повідомлення прямо цього не просить."
   );
+}
+
+/** The agent whose question is still waiting for the owner's answer (null when the bot asked nothing lately). */
+export function pendingAgent(now = Date.now()): string | null {
+  const last = state.log.at(-1);
+  if (!last || last.who !== "b" || !last.a || now - last.t > PENDING_MS) return null;
+  return last.text.includes("?") ? last.a : null;
 }
 
 export function facts(): string[] {
@@ -151,7 +167,7 @@ export async function memoryStatus(env: Env): Promise<MemoryStatus> {
   await loadMemory(env);
   return {
     persistent,
-    messages: state.log.length,
+    messages: Math.floor(state.log.length / 2),
     facts: facts(),
     limit: await limit(env),
     error: lastError,

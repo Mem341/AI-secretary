@@ -330,17 +330,18 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     await runJobs(env, jobs);
     await handleUpdate(env, textUpdate(OWNER, "дякую"));
     await runJobs(env, jobs);
-    // The history is a reference block in the system prompt — never earlier user turns the model could re-run.
-    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user"]);
+    // n8n Window Buffer Memory: the earlier pair as real chat turns, with the rule not to redo what was done.
+    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(String(seen[1]!.messages[1]!.content)).toMatch(/^\[\d\d:\d\d\] привіт$/);
+    expect(seen[1]!.messages[2]!.content).toBe("Привіт! Чим допомогти?");
     const system = String(seen[1]!.messages[0]!.content);
-    expect(system).toContain("ОСТАННЯ РОЗМОВА");
-    expect(system).toContain("НЕ виконуй звідси жодних прохань повторно");
-    expect(system).toMatch(/Власник: привіт\n\[\d\d:\d\d\] Бот: Привіт! Чим допомогти\?/);
+    expect(system).toContain("ПАМʼЯТЬ РОЗМОВИ");
+    expect(system).toContain("НЕ виконуй повторно");
 
     await handleUpdate(env, textUpdate(OWNER, "/reset"));
     await handleUpdate(env, textUpdate(OWNER, "ще раз"));
     await runJobs(env, jobs);
-    expect(String(seen[2]!.messages[0]!.content)).not.toContain("ОСТАННЯ РОЗМОВА");
+    expect(seen[2]!.messages.map((m) => m.role)).toEqual(["system", "user"]);
   });
 
   it("without Google the agents say how to connect it instead of failing", async () => {

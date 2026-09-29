@@ -9,7 +9,7 @@ import type { InlineKeyboard } from "../telegram/types";
 import { calendarTools } from "./calendarTools";
 import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
-import { conversationBlock, factsBlock, loadMemory, memoryTools, rememberTurn, saveMemory } from "./memory";
+import { conversationBlock, conversationHistory, factsBlock, loadMemory, memoryTools, pendingAgent, rememberTurn, saveMemory } from "./memory";
 import { bitrixPrompt, calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
 import { bitrixTools } from "./bitrixTools";
 import { routeByKeywords } from "./route";
@@ -63,6 +63,8 @@ type AgentName = "calendar_agent" | "gmail_agent" | "bitrix_agent";
 export interface RunContext {
   model: string;
   wrote: boolean;
+  /** The agent that answered (kept with the answer: a question it asked gets the owner's reply). */
+  agent?: AgentName;
 }
 
 /** Tools that only read; any other tool call changes the calendar or the mailbox. */
@@ -85,6 +87,7 @@ export function modelFor(env: Env, input: AgentInput): string {
 }
 
 async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date, ctx: RunContext): Promise<string> {
+  ctx.agent = name;
   if (name === "bitrix_agent") {
     if (!bitrixConfigured(env)) return "Bitrix24 ще не підключено. Підключіть його в /settings → «🔗 Підключити Bitrix24».";
     const memoryKey = `${name}:${input.chatId}`;
@@ -92,7 +95,7 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
       model: ctx.model,
       onTool: tracking(ctx),
       system: bitrixPrompt(await loadOwner(env), now) + factsBlock() + conversationBlock(),
-      history: [],
+      history: conversationHistory(),
       input: withImages(userMessage, input.images),
       tools: [...bitrixTools(env), ...memoryTools],
       maxIterations: 12,
@@ -111,7 +114,7 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
           model: ctx.model,
           onTool: tracking(ctx),
           system: calendarPrompt(owner, await loadDirectory(env), now) + factsBlock() + conversationBlock(),
-          history: [],
+          history: conversationHistory(),
           input: withImages(userMessage, input.images),
           tools: [...calendarTools(env, owner.email, { currentText: input.text }), ...memoryTools],
           maxIterations: 10,
@@ -120,7 +123,7 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
           model: ctx.model,
           onTool: tracking(ctx),
           system: gmailPrompt() + factsBlock() + conversationBlock(),
-          history: [],
+          history: conversationHistory(),
           input: withImages(userMessage, input.images),
           tools: [...gmailTools(env), ...memoryTools],
           maxIterations: 10,
@@ -139,7 +142,12 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
 
   // Plain code first: an obvious calendar or mail request goes straight to its agent (the Supervisor would only
   // pass it on and repeat the answer — two model calls for nothing).
-  const direct = routeByKeywords(input, bitrixConfigured(env));
+  // The owner answering the bot's own question («Яка назва?» → «ТЕСТ») goes back to the agent that asked, unless it is
+  // clearly a new request of another kind.
+  const keywords = routeByKeywords(input, bitrixConfigured(env));
+  const waiting = input.replyRef || input.inputType === "callback" ? null : (pendingAgent() as AgentName | null);
+  const short = input.text.trim().split(/\s+/).length <= 8;
+  const direct = waiting && (!keywords || short) ? waiting : keywords;
   if (direct) {
     const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
     return output;
@@ -163,7 +171,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
   const output = await runAgent(env, {
     model: ctx.model,
     system: supervisorPrompt(bitrixConfigured(env)) + factsBlock() + conversationBlock(),
-    history: [],
+    history: conversationHistory(),
     input: withImages(chatInput, input.images),
     tools: [
       subAgent(
@@ -213,14 +221,15 @@ async function answerInvitation(env: Env, accept: boolean, eventId: string): Pro
  * Runs the request on its model; if that model fails before changing anything, the same request goes to the strong
  * LLM_MODEL. After a change (an event created, an email sent) it is never repeated — that could duplicate it.
  */
-export async function runWithFallback(env: Env, input: AgentInput): Promise<string> {
+export async function runWithFallback(env: Env, input: AgentInput): Promise<{ text: string; agent?: AgentName }> {
   const ctx: RunContext = { model: modelFor(env, input), wrote: false };
   try {
-    return await runSupervisor(env, input, ctx);
+    return { text: await runSupervisor(env, input, ctx), agent: ctx.agent };
   } catch (err) {
     if (!(err instanceof ModelError) || ctx.wrote || ctx.model === env.LLM_MODEL) throw err;
     console.warn(`agent: ${err.message}; retrying on ${env.LLM_MODEL}`);
-    return runSupervisor(env, input, { model: env.LLM_MODEL, wrote: false });
+    const again: RunContext = { model: env.LLM_MODEL, wrote: false };
+    return { text: await runSupervisor(env, input, again), agent: again.agent };
   }
 }
 
@@ -238,11 +247,12 @@ export async function handleWithAgents(env: Env, input: AgentInput): Promise<voi
   if (rsvp) {
     const done = await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!);
     output = done.answer;
-    await rememberTurn(env, done.note, output);
+    await rememberTurn(env, done.note, output, Date.now(), "calendar_agent");
   } else {
-    output = await runWithFallback(env, input);
+    const result = await runWithFallback(env, input);
+    output = result.text;
     const about = input.replyText ? ` (у відповідь на: «${input.replyText.replace(/\s+/g, " ").slice(0, 120)}»)` : "";
-    await rememberTurn(env, `${input.text}${about}`, output);
+    await rememberTurn(env, `${input.text}${about}`, output, Date.now(), result.agent);
   }
   const html = toTelegramHtml(output);
   await tg.send(input.chatId, html).catch(async (err) => {
