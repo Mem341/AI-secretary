@@ -3,6 +3,7 @@ import { gmailPushEndpoint } from "../google/gmailPush";
 import { connectLink, hasGmailScope, hasGoogleAuth, loadOwnerSettings, type OwnerSettings, saveOwnerSettings } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
+import { clearMemory, MEMORY_CHOICES, memoryStatus, SEND } from "../agent/memory";
 import { integrationSource } from "../integrations";
 import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
 import type { User } from "./owner";
@@ -75,6 +76,7 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
       { text: "⏰ Нагадування", callback_data: "set:rem" },
       { text: `☀️ Ранковий список: ${digest ? "✅" : "❌"}`, callback_data: "set:digest" },
     ]);
+    keyboard.push([{ text: "🧠 Памʼять", callback_data: "set:mem" }]);
   }
   keyboard.push([{ text: google ? "🔄 Перепідключити Google" : "🔗 Підключити Google", url: await connectLink(env) }]);
   // Bitrix24 and Zoom: connected right here (the bot asks for the key); set by a deployment variable — nothing to do.
@@ -88,6 +90,44 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   if (integrationButtons.length) keyboard.push(integrationButtons);
   if (gmailPushConfigured(env) && gmail) keyboard.push([{ text: "📧 Адреса для сповіщень про листи", callback_data: "set:mailpush" }]);
   return { html, keyboard };
+}
+
+async function memoryView(env: Env, confirmClear = false): Promise<{ html: string; keyboard: InlineKeyboard }> {
+  const st = await memoryStatus(env);
+  const google = await hasGoogleAuth(env);
+  const lines = [
+    "🧠 <b>Памʼять</b>",
+    "",
+    "<b>Як це працює</b>",
+    `• Я памʼятаю останні <b>${st.limit}</b> повідомлень розмови — окремо для календаря, пошти й задач. Коли приходить нове, найстаріше видаляється.`,
+    `• У кожну відповідь беру лише останні ${SEND} — так відповіді швидкі й недорогі.`,
+    "• Важливе — хто є хто, email, ваші звички — записую в <b>нотатку фактів</b>. Вона не зникає разом зі старими повідомленнями. Можна сказати: «запамʼятай, що …» або «забудь, що …».",
+    "• Усе лежить у прихованій папці застосунку на вашому Google Drive: її не видно в Drive, доступ маєте лише ви й бот.",
+    "• /reset — почати розмову заново (факти лишаються).",
+    "",
+    `<b>Зараз:</b> ${st.messages} повідомлень · ${st.facts.length} фактів`,
+  ];
+  if (!st.persistent) {
+    lines.push(
+      "",
+      st.error && /drive api|accessNotConfigured|has not been used/i.test(st.error)
+        ? "⚠️ Памʼять поки тимчасова: у вашому проєкті Google Cloud увімкніть <b>Google Drive API</b>."
+        : google
+          ? "⚠️ Памʼять поки тимчасова (зникає, коли бот перезапускається). Перепідключіть Google й дозвольте доступ — і вона стане постійною."
+          : "⚠️ Памʼять поки тимчасова: підключіть Google, щоб вона зберігалась.",
+    );
+  }
+  const size = (n: number) => ({ text: `${st.limit === n ? "✅" : "▫️"} ${n}`, callback_data: `set:mem:${n}` });
+  const keyboard: InlineKeyboard = [
+    MEMORY_CHOICES.map(size),
+    [
+      { text: "📄 Що я памʼятаю", callback_data: "set:mem:facts" },
+      confirmClear ? { text: "⚠️ Так, очистити все", callback_data: "set:mem:clear!" } : { text: "🧹 Очистити", callback_data: "set:mem:clear" },
+    ],
+  ];
+  if (!st.persistent && google) keyboard.push([{ text: "🔄 Перепідключити Google", url: await connectLink(env) }]);
+  keyboard.push([{ text: "⬅️ Готово", callback_data: "set:back" }]);
+  return { html: lines.join("\n"), keyboard };
 }
 
 async function remindersView(env: Env): Promise<{ html: string; keyboard: InlineKeyboard }> {
@@ -145,6 +185,41 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     await disconnect(env, what);
     await answer(`${INTEGRATION_NAMES[what]} відключено`);
     return show(await mainView(env, user));
+  }
+  if (data === "set:mem" || data.startsWith("set:mem:")) {
+    const arg = data.slice("set:mem:".length);
+    if (data === "set:mem") {
+      await answer();
+      return show(await memoryView(env));
+    }
+    if (arg === "facts") {
+      await answer();
+      const st = await memoryStatus(env);
+      await tg.send(
+        user.tg_id,
+        st.facts.length
+          ? `🧠 <b>Що я памʼятаю</b>\n\n${st.facts.map((f) => `• ${esc(f)}`).join("\n")}\n\n<i>Виправити: «забудь, що …» або «запамʼятай, що …».</i>`
+          : "🧠 Поки що фактів немає. Скажіть «запамʼятай, що …» — і я збережу.",
+      );
+      return;
+    }
+    if (arg === "clear") {
+      await answer();
+      return show(await memoryView(env, true));
+    }
+    if (arg === "clear!") {
+      await clearMemory(env);
+      await answer("Памʼять очищено");
+      return show(await memoryView(env));
+    }
+    const n = Number(arg);
+    if (MEMORY_CHOICES.includes(n)) {
+      await saveOwnerSettings(env, { ...(await loadOwnerSettings(env)), m: n });
+      await answer(`Памʼятаю останні ${n} повідомлень`);
+      return show(await memoryView(env));
+    }
+    await answer();
+    return;
   }
   if (data === "set:back") {
     await answer();

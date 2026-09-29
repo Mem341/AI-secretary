@@ -16,6 +16,8 @@ export const GOOGLE_SCOPES = [
   // See /api/setup for the options.
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.labels",
+  // The bot's own hidden folder on the owner's Drive (not their files): the long conversation memory (agent/memory.ts).
+  "https://www.googleapis.com/auth/drive.appdata",
 ];
 const STATE_TTL_MS = 30 * 60_000;
 
@@ -109,6 +111,8 @@ export interface OwnerSettings {
   r?: number[];
   /** Morning list of the day's meetings; false = off. */
   d?: boolean;
+  /** Conversation memory per agent, in messages (20 / 50 / 100). */
+  m?: number;
 }
 
 /** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
@@ -226,6 +230,11 @@ export async function saveOwnerSettings(env: Env, settings: OwnerSettings): Prom
 
 export async function hasGoogleAuth(env: Env): Promise<boolean> {
   return !!(await loadGrant(env));
+}
+
+/** Whether the grant includes the bot's hidden Drive folder (grants from before the memory feature do not). */
+export async function hasDriveScope(env: Env): Promise<boolean> {
+  return !!(await loadGrant(env))?.scope.includes("drive.appdata");
 }
 
 /** Whether the grant includes Gmail (the owner may have unticked it on Google's screen). */

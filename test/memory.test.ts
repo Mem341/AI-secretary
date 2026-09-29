@@ -1,0 +1,136 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetMemory } from "../src/agent/memory";
+import { resetDriveCache } from "../src/google/drive";
+import { resetGoogleCache, saveOwnerSettings } from "../src/google/oauth";
+import { handleUpdate } from "../src/telegram/handler";
+import type { TgMessage, TgUpdate } from "../src/telegram/types";
+import { connectGoogle, GMAIL_SCOPE, type LlmRequest, lastBotMessage, llmText, llmTools, mockFetch, OWNER, openRouter, resetInstance, runJobs, testEnv, tgCalls } from "./helpers";
+
+const DRIVE_SCOPE = `${GMAIL_SCOPE} https://www.googleapis.com/auth/drive.appdata`;
+
+/** A fake appDataFolder that survives "restarts" of the bot (like the real Drive). */
+function fakeDrive() {
+  const files = new Map<string, { name: string; body: string }>();
+  let next = 1;
+  const route = (url: URL, init: RequestInit & { bodyText: string }) => {
+    if (url.hostname !== "www.googleapis.com" || !url.pathname.includes("/drive/v3/files")) return undefined;
+    const method = init.method ?? "GET";
+    if (url.pathname === "/drive/v3/files" && method === "GET") {
+      const name = /name = '([^']+)'/.exec(url.searchParams.get("q") ?? "")?.[1];
+      return Response.json({ files: [...files].filter(([, f]) => f.name === name).map(([id]) => ({ id })) });
+    }
+    if (url.pathname === "/upload/drive/v3/files" && method === "POST") {
+      const parts = init.bodyText.split(/--ais\d+/).map((p) => p.split("\r\n\r\n")[1]?.trim()).filter(Boolean);
+      const id = `f${next++}`;
+      files.set(id, { name: JSON.parse(parts[0]!).name, body: parts[1]! });
+      return Response.json({ id });
+    }
+    const id = url.pathname.split("/").at(-1)!;
+    if (method === "PATCH") {
+      files.set(id, { ...files.get(id)!, body: init.bodyText });
+      return Response.json({ id });
+    }
+    return files.has(id) ? new Response(files.get(id)!.body) : Response.json({}, { status: 404 });
+  };
+  return { files, route, json: () => JSON.parse([...files.values()][0]!.body) };
+}
+
+/** A cold start: everything the running instance remembered is gone (Drive is not). */
+function restart() {
+  resetMemory();
+  resetGoogleCache();
+  resetDriveCache();
+}
+
+beforeEach(() => resetInstance());
+afterEach(() => vi.restoreAllMocks());
+
+let n = 1;
+const from = { id: OWNER, is_bot: false, first_name: "О" };
+const say = (t: string): TgUpdate => ({ update_id: n++, message: { message_id: 300 + n, date: 0, chat: { id: OWNER, type: "private" }, from, text: t } });
+const press = (data: string, message: TgMessage): TgUpdate => ({ update_id: n++, callback_query: { id: `c${n}`, from, data, message } });
+
+describe("conversation memory in the hidden Drive folder", () => {
+  it("survives a restart of the bot", async () => {
+    await connectGoogle({ scope: DRIVE_SCOPE });
+    const drive = fakeDrive();
+    const seen: LlmRequest[] = [];
+    mockFetch([drive.route, openRouter((_r, i) => llmText(i === 1 ? "Привіт! Чим допомогти?" : "Завжди радий допомогти!"), seen)]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, say("привіт"));
+    await runJobs(env, jobs);
+    expect(drive.files.size).toBe(1);
+
+    restart();
+    await handleUpdate(env, say("дякую"));
+    await runJobs(env, jobs);
+    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(seen[1]!.messages[2]!.content).toBe("Привіт! Чим допомогти?");
+  });
+
+  it("keeps the last N messages the owner chose; the oldest drop out", async () => {
+    await connectGoogle({ scope: DRIVE_SCOPE });
+    const drive = fakeDrive();
+    mockFetch([drive.route, openRouter(() => llmText("ok"))]);
+    const { env, jobs } = testEnv();
+    await saveOwnerSettings(env, { m: 20 });
+    for (let i = 1; i <= 12; i++) {
+      await handleUpdate(env, say(`повідомлення ${i}`));
+      await runJobs(env, jobs);
+    }
+    const thread = drive.json().threads[`supervisor:${OWNER}`] as { content: string }[];
+    expect(thread).toHaveLength(20);
+    expect(thread[0]!.content).toContain("повідомлення 3");
+    expect(thread.at(-2)!.content).toContain("повідомлення 12");
+  });
+
+  it("facts the agent writes stay after /reset and go into the next prompt", async () => {
+    await connectGoogle({ scope: DRIVE_SCOPE });
+    const drive = fakeDrive();
+    const seen: LlmRequest[] = [];
+    let step = 0;
+    mockFetch([
+      drive.route,
+      openRouter(() => (++step === 1 ? llmTools(["remember_fact", { fact: "Іван Петренко — ivan@acme.ua, менеджер з продажу" }]) : llmText("Запамʼятав")), seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, say("запамʼятай: Іван Петренко — ivan@acme.ua"));
+    await runJobs(env, jobs);
+    expect(drive.json().facts).toEqual(["Іван Петренко — ivan@acme.ua, менеджер з продажу"]);
+
+    restart();
+    await handleUpdate(env, say("/reset"));
+    expect(drive.json().threads).toEqual({});
+    await handleUpdate(env, say("привіт"));
+    await runJobs(env, jobs);
+    expect(String(seen.at(-1)!.messages[0]!.content)).toContain("Іван Петренко — ivan@acme.ua");
+  });
+
+  it("/settings → 🧠 explains how memory works; sizes and clearing are buttons", async () => {
+    await connectGoogle({ scope: DRIVE_SCOPE });
+    const drive = fakeDrive();
+    const calls = mockFetch([drive.route]);
+    const { env } = testEnv();
+    await handleUpdate(env, say("/settings"));
+    const msg = lastBotMessage("Налаштування");
+    await handleUpdate(env, press("set:mem", msg));
+    const view = tgCalls(calls, "editMessageText").at(-1)!;
+    expect(String(view.text)).toContain("Як це працює");
+    expect(String(view.text)).toContain("останні <b>100</b> повідомлень");
+    expect(String(view.text)).toContain("Google Drive");
+    expect(String(view.text)).not.toContain("тимчасова");
+    const buttons = (view.reply_markup as { inline_keyboard: { callback_data?: string }[][] }).inline_keyboard.flat().map((b) => b.callback_data);
+    expect(buttons).toEqual(["set:mem:20", "set:mem:50", "set:mem:100", "set:mem:facts", "set:mem:clear", "set:back"]);
+    await handleUpdate(env, press("set:mem:50", msg));
+    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("останні <b>50</b> повідомлень");
+  });
+
+  it("without the Drive permission the memory is temporary, and the section says how to fix it", async () => {
+    await connectGoogle();
+    const calls = mockFetch([]);
+    const { env } = testEnv();
+    await handleUpdate(env, say("/settings"));
+    await handleUpdate(env, press("set:mem", lastBotMessage("Налаштування")));
+    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("Перепідключіть Google");
+  });
+});
