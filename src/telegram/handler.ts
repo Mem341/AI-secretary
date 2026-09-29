@@ -1,4 +1,4 @@
-import { forget } from "../agent/memory";
+import { forgetConversation } from "../agent/memory";
 import { helpText, sendConnectGoogle, startOnboarding } from "../bot/onboarding";
 import { handleConnectAnswer } from "../bot/connect";
 import { handleSettingsButton, showSettings } from "../bot/settings";
@@ -139,7 +139,7 @@ async function handleCommand(env: Env, user: User, text: string): Promise<boolea
       await tg.send(user.tg_id, helpText());
       return true;
     case "/reset":
-      forget("");
+      await forgetConversation(env);
       await tg.send(user.tg_id, "🧹 Контекст розмови очищено.");
       return true;
     case "/bitrix":

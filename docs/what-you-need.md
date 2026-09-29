@@ -58,9 +58,11 @@
 
 1. **Проєкт.** [Створіть проєкт](https://console.cloud.google.com/projectcreate) з будь-якою назвою, напр. `ai-secretary`.
    Далі переконайтеся, що вгорі вибрано саме його.
-2. **API.** Увімкніть (**Enable**) дві бібліотеки:
+2. **API.** Увімкніть (**Enable**) три бібліотеки:
    - [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com);
-   - [Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
+   - [Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com);
+   - [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) — для памʼяті розмови (бот
+     бачить лише свою приховану папку, не ваші файли).
 3. **Екран згоди.** Відкрийте [Google Auth Platform](https://console.cloud.google.com/auth/overview) → **Get started**:
    - App name: `AI-secretary`; User support email: ваша пошта → Next;
    - **Audience**:

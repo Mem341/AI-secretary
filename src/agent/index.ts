@@ -8,7 +8,7 @@ import { esc, Telegram } from "../telegram/api";
 import { calendarTools } from "./calendarTools";
 import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
-import { history, remember } from "./memory";
+import { factsBlock, history, loadMemory, memoryTools, remember, saveMemory } from "./memory";
 import { bitrixPrompt, calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
 import { bitrixTools } from "./bitrixTools";
 import { routeByKeywords } from "./route";
@@ -63,7 +63,7 @@ export interface RunContext {
 }
 
 /** Tools that only read; any other tool call changes the calendar or the mailbox. */
-const READ_ONLY = /^(get_|check_free_busy|msg_get|thread_get|draft_get|label_get|find_|list_tasks|task_stats)/;
+const READ_ONLY = /^(get_|check_free_busy|msg_get|thread_get|draft_get|label_get|find_|list_tasks|task_stats|remember_fact|forget_fact)/;
 
 function tracking(ctx: RunContext) {
   return (name: string) => {
@@ -88,13 +88,13 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
     const answer = await runAgent(env, {
       model: ctx.model,
       onTool: tracking(ctx),
-      system: bitrixPrompt(await loadOwner(env), now),
+      system: bitrixPrompt(await loadOwner(env), now) + factsBlock(),
       history: history(memoryKey),
       input: withImages(userMessage, input.images),
-      tools: bitrixTools(env),
+      tools: [...bitrixTools(env), ...memoryTools],
       maxIterations: 12,
     });
-    remember(memoryKey, userMessage, answer);
+    await remember(env, memoryKey, userMessage, answer);
     return answer;
   }
   if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
@@ -108,22 +108,22 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
       ? await runAgent(env, {
           model: ctx.model,
           onTool: tracking(ctx),
-          system: calendarPrompt(owner, await loadDirectory(env), now),
+          system: calendarPrompt(owner, await loadDirectory(env), now) + factsBlock(),
           history: history(memoryKey),
           input: withImages(userMessage, input.images),
-          tools: calendarTools(env, owner.email),
+          tools: [...calendarTools(env, owner.email), ...memoryTools],
           maxIterations: 10,
         })
       : await runAgent(env, {
           model: ctx.model,
           onTool: tracking(ctx),
-          system: gmailPrompt(),
+          system: gmailPrompt() + factsBlock(),
           history: history(memoryKey),
           input: withImages(userMessage, input.images),
-          tools: gmailTools(env),
+          tools: [...gmailTools(env), ...memoryTools],
           maxIterations: 10,
         });
-  remember(memoryKey, userMessage, answer);
+  await remember(env, memoryKey, userMessage, answer);
   return answer;
 }
 
@@ -141,7 +141,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
   const direct = routeByKeywords(input, bitrixConfigured(env));
   if (direct) {
     const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
-    remember(`supervisor:${key}`, chatInput, output);
+    await remember(env, `supervisor:${key}`, chatInput, output);
     return output;
   }
 
@@ -162,7 +162,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
 
   const output = await runAgent(env, {
     model: ctx.model,
-    system: supervisorPrompt(bitrixConfigured(env)),
+    system: supervisorPrompt(bitrixConfigured(env)) + factsBlock(),
     history: history(`supervisor:${key}`),
     input: withImages(chatInput, input.images),
     tools: [
@@ -171,6 +171,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
         "Calendar Agent — manages Google Calendar: create/update/delete events, check schedule, RSVP, reschedule, manage attendees. Supports Google Meet and Zoom. Call this tool for any calendar-related requests.",
       ),
       subAgent("gmail_agent", "Gmail Agent — search, read, send, reply, delete, label emails. Call with the user's full request about email."),
+      ...memoryTools,
       ...(bitrixConfigured(env)
         ? [
             subAgent(
@@ -183,7 +184,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
     maxIterations: 15,
     temperature: 0.2,
   });
-  remember(`supervisor:${key}`, chatInput, output);
+  await remember(env, `supervisor:${key}`, chatInput, output);
   return output;
 }
 
@@ -218,6 +219,7 @@ export async function runWithFallback(env: Env, input: AgentInput): Promise<stri
 export async function handleWithAgents(env: Env, input: AgentInput): Promise<void> {
   const tg = new Telegram(env);
   const rsvp = /^(accept|decline):(.+)$/.exec(input.callbackData ?? "");
+  if (!rsvp) await loadMemory(env);
   const output = rsvp ? await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!) : await runWithFallback(env, input);
   const html = toTelegramHtml(output);
   await tg.send(input.chatId, html).catch(async (err) => {
@@ -226,6 +228,8 @@ export async function handleWithAgents(env: Env, input: AgentInput): Promise<voi
     const plain = html.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
     await tg.send(input.chatId, esc(plain));
   });
+  // Memory goes back to Drive after the owner already has the answer.
+  if (!rsvp) await saveMemory(env);
   if (input.callbackId) {
     await tg.call("answerCallbackQuery", { callback_query_id: input.callbackId, text: "✅" }).catch(() => undefined);
     if (input.callbackMessageId) {

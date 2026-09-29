@@ -211,7 +211,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     expect(seen.map(isSupervisor)).toEqual([true, false, true]);
     expect(lastContent(seen[0]!)).toContain("USER: перенеси зустріч з Іваном і напиши йому лист");
     expect(lastContent(seen[0]!)).toContain("---SESSION---");
-    expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent"]);
+    expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent", "remember_fact", "forget_fact"]);
     expect(lastContent(seen[1]!)).toBe("перенеси зустріч з Іваном і напиши йому лист");
   });
 
@@ -565,7 +565,7 @@ describe("typing indicator", () => {
       const { env, jobs } = testEnv();
       const running = runJobs(env, [{ body: { type: "agent", input: { chatId: OWNER, inputType: "text", text: "привіт" }, photoIds: [] } }]);
       // Wait (in fake time, with real async crypto in between) until the job is inside the LLM call.
-      for (let i = 0; i < 200 && !release; i++) await vi.advanceTimersByTimeAsync(50);
+      for (let i = 0; i < 2000 && !release; i++) await vi.advanceTimersByTimeAsync(50);
       expect(release).toBeDefined();
       const before = tgCalls(calls, "sendChatAction").length;
       expect(before).toBeGreaterThanOrEqual(1);

@@ -65,8 +65,12 @@ webhook and redirects to the bot; `/api/health` shows the state.
   `MAX_HIDDEN`.
 - Calendar: read live; what the bot already reported is a private extended property on each event
   (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`, `aisRsvp` — guests' answers already reported). Gmail: a hidden label marks reported emails.
-- Bursts of forwarded messages (`session.ts`) and the agents' chat memory (`agent/memory.ts`): in memory,
-  self-expiring; losing it may cost context or a duplicate, never data. Do not add a database or any other store.
+- The agents' chat memory (`agent/memory.ts`, the owner asked for it): ONE file, memory.json, in the bot's hidden
+  Drive folder (`google/drive.ts`, scope `drive.appdata`): per-agent threads of the last 20/50/100 messages (owner's
+  choice, `OwnerSettings.m`), the model gets the last `SEND`; plus facts the agents save with `remember_fact`.
+  Loaded at the start of an agent request, written after the answer. Without the Drive scope it stays in the instance.
+- Bursts of forwarded messages (`session.ts`): in memory, self-expiring; losing it may cost a duplicate, never data.
+  Do not add a database or any other store.
 
 ## Rules
 
