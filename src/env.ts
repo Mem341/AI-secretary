@@ -49,6 +49,8 @@ export interface Config {
    * push and Gmail actions still work on demand (e.g. "перевір пошту").
    */
   GMAIL_PUBSUB_TOPIC: string;
+  /** The Google Cloud project of the OAuth client (from GOOGLE_CLIENT_JSON): where the bot sets up Gmail push itself. */
+  GOOGLE_PROJECT_ID: string;
 
   // Optional profile for event descriptions; the name defaults to the owner's Telegram name.
   OWNER_NAME: string;
@@ -145,10 +147,13 @@ export function loadConfig(source: Record<string, string | undefined> = process.
  * The Google OAuth client: GOOGLE_CLIENT_JSON (the JSON file downloaded from Google Cloud, pasted as is) or
  * GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (+ GOOGLE_CLIENT_TYPE, default "web").
  */
-function googleClient(val: (k: string) => string): Pick<Config, "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "GOOGLE_OAUTH_MODE"> {
+function googleClient(
+  val: (k: string) => string,
+): Pick<Config, "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "GOOGLE_OAUTH_MODE" | "GOOGLE_PROJECT_ID"> {
   const raw = val("GOOGLE_CLIENT_JSON");
   if (raw) {
-    let json: { installed?: { client_id?: string; client_secret?: string }; web?: { client_id?: string; client_secret?: string } };
+    type Client = { client_id?: string; client_secret?: string; project_id?: string };
+    let json: { installed?: Client; web?: Client };
     try {
       json = JSON.parse(raw);
     } catch {
@@ -158,12 +163,18 @@ function googleClient(val: (k: string) => string): Pick<Config, "GOOGLE_CLIENT_I
     if (!client?.client_id || !client.client_secret) {
       throw new ConfigError("GOOGLE_CLIENT_JSON has no client_id / client_secret: download the JSON of the OAuth client again");
     }
-    return { GOOGLE_CLIENT_ID: client.client_id, GOOGLE_CLIENT_SECRET: client.client_secret, GOOGLE_OAUTH_MODE: json.installed ? "desktop" : "web" };
+    return {
+      GOOGLE_CLIENT_ID: client.client_id,
+      GOOGLE_CLIENT_SECRET: client.client_secret,
+      GOOGLE_OAUTH_MODE: json.installed ? "desktop" : "web",
+      GOOGLE_PROJECT_ID: val("GOOGLE_PROJECT_ID") || client.project_id || "",
+    };
   }
   return {
     GOOGLE_CLIENT_ID: val("GOOGLE_CLIENT_ID"),
     GOOGLE_CLIENT_SECRET: val("GOOGLE_CLIENT_SECRET"),
     GOOGLE_OAUTH_MODE: val("GOOGLE_CLIENT_TYPE") === "desktop" ? "desktop" : "web",
+    GOOGLE_PROJECT_ID: val("GOOGLE_PROJECT_ID"),
   };
 }
 
@@ -201,8 +212,17 @@ export function zoomConfigured(env: Config): boolean {
   return !!(env.ZOOM_ACCOUNT_ID && env.ZOOM_CLIENT_ID && env.ZOOM_CLIENT_SECRET);
 }
 
+/**
+ * The Pub/Sub topic Gmail pushes new mail to: GMAIL_PUBSUB_TOPIC, or one the bot creates itself in the OAuth
+ * client's Google Cloud project (google/pubsub.ts). "" when neither is possible.
+ */
+export function gmailTopic(env: Config): string {
+  if (env.GMAIL_PUBSUB_TOPIC) return env.GMAIL_PUBSUB_TOPIC;
+  return env.GOOGLE_PROJECT_ID ? `projects/${env.GOOGLE_PROJECT_ID}/topics/ai-secretary-gmail` : "";
+}
+
 export function gmailPushConfigured(env: Config): boolean {
-  return !!env.GMAIL_PUBSUB_TOPIC;
+  return !!gmailTopic(env);
 }
 
 /**

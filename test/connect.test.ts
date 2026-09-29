@@ -32,7 +32,8 @@ describe("connecting Bitrix24 and Zoom from /settings (no deployment variables)"
     const settings = lastBotMessage("Налаштування");
     await handleUpdate(env, press("set:on:bitrix", settings));
     const prompt = lastBotMessage("Підключення Bitrix24");
-    expect(tgCalls(calls, "sendMessage").at(-1)!.reply_markup).toMatchObject({ force_reply: true });
+    // No force-reply: it would leave a placeholder in the owner's input field.
+    expect(tgCalls(calls, "sendMessage").at(-1)!.reply_markup).toBeUndefined();
 
     await handleUpdate(env, text(`${WEBHOOK}profile.json`, { reply_to_message: prompt }));
     expect(tgCalls(calls, "deleteMessage").length).toBeGreaterThanOrEqual(1);

@@ -2,6 +2,7 @@ import { Bitrix, resetBitrixCache } from "../bitrix/client";
 import { bitrixUrl, ConfigError, type Env } from "../env";
 import { loadIntegrations, saveIntegrations } from "../google/oauth";
 import { applyIntegrations } from "../integrations";
+import { refreshCommands } from "./commands";
 import { expectAnswer, takeAnswer } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData, readHidden } from "../telegram/hidden";
@@ -39,7 +40,7 @@ const PROMPTS: Record<Integration, string> = {
 export async function startConnect(env: Env, chatId: number, what: Integration): Promise<void> {
   const ask: Ask = { k: "ask", w: what };
   expectAnswer(chatId, ask);
-  await new Telegram(env).send(chatId, hiddenData(ask) + PROMPTS[what], { forceReply: what === "bitrix" ? "Адреса вебхука" : "Account ID / Client ID / Client Secret" });
+  await new Telegram(env).send(chatId, hiddenData(ask) + PROMPTS[what]);
 }
 
 export async function disconnect(env: Env, what: Integration): Promise<void> {
@@ -102,6 +103,7 @@ export async function handleConnectAnswer(env: Env, msg: TgMessage, text: string
     await saveIntegrations(env, { ...current, bitrix: url });
     resetBitrixCache();
     await applyIntegrations(env);
+    await refreshCommands(env);
     await tg.send(msg.chat.id, `✅ <b>Bitrix24 підключено</b>${who ? ` — ${esc(who)}` : ""}.\n\nСпробуйте /bitrix або напишіть «мої задачі».`);
     return true;
   }

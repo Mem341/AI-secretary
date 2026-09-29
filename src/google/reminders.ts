@@ -4,7 +4,8 @@ import { DAY, formatRange, kyivLocalToDate, kyivParts, MINUTE } from "../lib/tim
 import { firstTime } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
-import { Calendar } from "./calendar";
+import { Calendar, type GEvent } from "./calendar";
+import { type GMessage, Gmail, toMailMessage } from "./gmail";
 import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
 
 export function formatAgenda(meetings: Meeting[], now: Date): string {
@@ -80,20 +81,125 @@ export async function checkReminders(env: Env, now = Date.now()): Promise<Remind
     const mark = dueReminder(marks, m.start_at - now, lastSent);
     const seen = { title: m.title ?? "зустріч", minutesLeft: Math.round((m.start_at - now) / MINUTE), sentNow: null as number | null };
     check.upcoming.push(seen);
-    if (mark === null || !firstTime(`remind:${ev.id}:${m.start_at}:${mark}`, DAY)) continue;
-    const minutes = Math.max(1, Math.round((m.start_at - now) / MINUTE));
-    const lines = [`⏰ <b>Через ${minutes} хв:</b> ${esc(m.title ?? "зустріч")}`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];
-    if (m.meet_url) lines.push(`🔗 ${esc(m.meet_url)}`);
-    else if (m.location) lines.push(`📍 ${esc(m.location)}`);
-    if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
-    // Marked first, as a claim on this version of the event: two checks running at once send it only once.
-    // Recurring instances are not marked (that would turn each into an exception); the instance memory covers them.
-    if (!ev.recurringEventId && !(await cal.claimPrivate(ev, { ...props, [PROP_REMINDED]: `${m.start_at}:${mark}` }))) continue;
-    await tg.send(env.OWNER_TELEGRAM_ID, hiddenData({ k: "ev", id: ev.id } satisfies EventRef) + lines.join("\n"));
-    check.sent++;
-    seen.sentNow = mark;
+    if (mark === null) continue;
+    if (await sendReminder(env, cal, tg, ev, m, mark, now)) {
+      check.sent++;
+      seen.sentNow = mark;
+    }
   }
   return check;
+}
+
+/** One reminder, claimed first on the event so it goes out once whatever woke the bot (a reminder email, a check). */
+async function sendReminder(env: Env, cal: Calendar, tg: Telegram, ev: GEvent, m: Meeting, mark: number, now: number): Promise<boolean> {
+  if (!firstTime(`remind:${ev.id}:${m.start_at}:${mark}`, DAY)) return false;
+  const props = ev.extendedProperties?.private ?? {};
+  // Recurring instances are not marked (that would turn each into an exception); the instance memory covers them.
+  if (!ev.recurringEventId && !(await cal.claimPrivate(ev, { ...props, [PROP_REMINDED]: `${m.start_at}:${mark}` }))) return false;
+  const minutes = Math.max(1, Math.round((m.start_at - now) / MINUTE));
+  const lines = [`⏰ <b>Через ${minutes} хв:</b> ${esc(m.title ?? "зустріч")}`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];
+  if (m.meet_url) lines.push(`🔗 ${esc(m.meet_url)}`);
+  else if (m.location) lines.push(`📍 ${esc(m.location)}`);
+  if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
+  await tg.send(env.OWNER_TELEGRAM_ID, hiddenData({ k: "ev", id: ev.id } satisfies EventRef) + lines.join("\n"));
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Google itself as the clock: no cron, no outside service.
+//
+// Every upcoming meeting gets the owner's own Google reminders "by email" at the chosen minutes. At that minute
+// Google sends the email; Gmail pushes the bot at once (google/pubsub.ts); the bot recognises the calendar's reminder
+// email, sends the Telegram reminder and moves the email to Trash.
+
+/** The owner's reminders for a meeting: an email per chosen mark (Google allows 5) plus a phone popup if room. */
+export function desiredReminders(marks: number[]): NonNullable<GEvent["reminders"]> {
+  const overrides = marks.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
+  if (overrides.length < 5) overrides.push({ method: "popup", minutes: 10 });
+  return { useDefault: false, overrides };
+}
+
+const sameReminders = (a: GEvent["reminders"], b: NonNullable<GEvent["reminders"]>) =>
+  !a?.useDefault &&
+  JSON.stringify([...(a?.overrides ?? [])].map((o) => `${o.method}:${o.minutes}`).sort()) ===
+    JSON.stringify(b.overrides!.map((o) => `${o.method}:${o.minutes}`).sort());
+
+/**
+ * Puts the reminder emails on the owner's upcoming meetings (next 8 days; a recurring series once, on its master).
+ * Only changes what differs. Returns how many events were changed.
+ */
+export async function applyEmailReminders(env: Env, events?: GEvent[], now = Date.now()): Promise<number> {
+  const marks = await reminderMarks(env);
+  const cal = new Calendar(env);
+  const list =
+    events ??
+    (
+      await cal.listEvents({
+        singleEvents: "true",
+        orderBy: "startTime",
+        timeMin: new Date(now).toISOString(),
+        timeMax: new Date(now + 8 * DAY).toISOString(),
+        maxResults: "250",
+      })
+    ).items;
+  const want = marks.length ? desiredReminders(marks) : { useDefault: true };
+  const done = new Set<string>();
+  let changed = 0;
+  for (const ev of list) {
+    const change = eventToChange(ev);
+    if (change.kind !== "upsert" || change.meeting.end_at < now) continue;
+    const target = ev.recurringEventId ?? ev.id;
+    if (done.has(target)) continue;
+    done.add(target);
+    if (marks.length ? sameReminders(ev.reminders, want) : ev.reminders?.useDefault) continue;
+    await cal
+      .setReminders(target, want)
+      .then(() => changed++)
+      .catch((err) => console.warn("gcal: cannot set reminders", target, err instanceof Error ? err.message : err));
+  }
+  return changed;
+}
+
+/** All text of an email, every part decoded (the calendar's link with the event id is in there). */
+function allText(part: GMessage["payload"]): string {
+  if (!part) return "";
+  const own = part.body?.data ? Buffer.from(part.body.data, "base64url").toString("utf8") : "";
+  return [own, ...(part.parts ?? []).map(allText)].join("\n");
+}
+
+const REMINDER_SUBJECT = /^(notification|reminder|уведомление|напоминание|сповіщення|нагадування|powiadomienie|benachrichtigung)\b/i;
+
+/** The event id from a Google Calendar email: its links carry eid = base64("<event id> <calendar>"). */
+export function eventIdFromEmail(m: GMessage): string | null {
+  for (const eid of allText(m.payload).matchAll(/[?&]eid=([A-Za-z0-9_-]+)/g)) {
+    const decoded = Buffer.from(eid[1]!, "base64url").toString("utf8");
+    const id = decoded.split(" ")[0];
+    if (id && /^[a-z0-9_]+$/i.test(id)) return id;
+  }
+  return null;
+}
+
+/**
+ * A new email that is the calendar's own reminder: sends the Telegram reminder instead of a "new mail" notice and
+ * moves the email to Trash. False when it is any other email.
+ */
+export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now()): Promise<boolean> {
+  const mail = toMailMessage(m);
+  if (!/calendar-notification@google\.com/i.test(mail.from) || !REMINDER_SUBJECT.test(mail.subject.trim())) return false;
+  const id = eventIdFromEmail(m);
+  if (!id) return false;
+  const cal = new Calendar(env);
+  const ev = await cal.getEvent(id).catch(() => null);
+  const change = ev ? eventToChange(ev) : null;
+  if (ev && change?.kind === "upsert" && change.meeting.start_at > now - 5 * MINUTE) {
+    const marks = await reminderMarks(env);
+    const left = change.meeting.start_at - now;
+    // The mark this email stands for: the smallest chosen one not below the time left.
+    const mark = marks.filter((x) => left <= x * MINUTE + EARLY).sort((a, b) => a - b)[0] ?? Math.max(1, Math.round(left / MINUTE));
+    await sendReminder(env, cal, new Telegram(env), ev, change.meeting, mark, now);
+  }
+  await new Gmail(env).trash(m.id).catch(() => undefined);
+  return true;
 }
 
 /** Morning digest from the daily cron: today's remaining meetings. Nothing is sent on an empty day. */

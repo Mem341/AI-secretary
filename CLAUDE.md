@@ -45,10 +45,16 @@ webhook and redirects to the bot; `/api/health` shows the state.
   `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /bitrix /reset /help; everything else
   goes to the agents.
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
-  format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest,
-  reminders via /api/cron/reminders), Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
-- `vercel.json` crons stay daily (Vercel Hobby rejects more frequent ones); /api/cron/reminders (reminders 30 and 10 min before,
-  plain code, no AI) is for an optional 5-minute pinger such as cron-job.org.
+  format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest and meeting reminders),
+  Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
+- Meeting reminders use Google as the clock — no cron, no outside service (the owner forbade both): the bot sets
+  the owner's own reminder emails on upcoming meetings (`applyEmailReminders`, at the minutes chosen in /settings);
+  Google sends the email at that minute, Gmail push wakes the bot, `handleReminderEmail` sends the Telegram reminder
+  and trashes the email. The Gmail push itself is set up by the bot in the OAuth client's project (`pubsub.ts`
+  `setupGoogleWake`, scope pubsub; the owner only enables the Cloud Pub/Sub API); /settings → ⏰ → «Перевірити»
+  reports what is missing.
+- `vercel.json`: the one daily cron (digest, renewing the calendar channel and the Gmail watch) — do not add more;
+  /api/cron/reminders stays as a manual check of reminders.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived
   in-instance memory; `src/zoom/` — Zoom API.
 
