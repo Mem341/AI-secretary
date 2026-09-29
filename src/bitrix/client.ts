@@ -160,20 +160,90 @@ export class Bitrix {
     return result.task;
   }
 
+  /**
+   * The task's whole discussion, oldest first: the «Чат завдання» of new Bitrix24 task cards (im chat of the task,
+   * where status changes are posted too) plus old-style comments. Needs the webhook's «Чат і повідомлення» (im)
+   * right for the chat; without it only old comments are read.
+   */
   async comments(id: string | number): Promise<BxComment[]> {
-    const { result } = await this.call<Record<string, string>[]>("task.commentitem.getlist", { TASKID: Number(id), ORDER: { POST_DATE: "asc" } });
-    return (result ?? []).map(toComment);
+    return (await this.commentsOf([String(id)]))[String(id)] ?? [];
   }
 
-  /** Comments of many tasks at once (one batch request per 50 tasks). */
+  /** Discussions of many tasks at once (batch requests of up to 50 calls). */
   async commentsOf(ids: string[]): Promise<Record<string, BxComment[]>> {
-    const raw = await this.batch<Record<string, string>[]>(
+    if (!ids.length) return {};
+    const old = await this.batch<Record<string, string>[]>(
       Object.fromEntries(ids.map((id) => [`t${id}`, `task.commentitem.getlist?TASKID=${encodeURIComponent(id)}&ORDER[POST_DATE]=asc`])),
+    ).catch(() => ({}) as Record<string, Record<string, string>[]>);
+    const chats = await this.chatIds(ids);
+    const chatMessages = await this.chatMessagesOf(chats);
+    return Object.fromEntries(
+      ids.map((id) => {
+        const all = [...(old[`t${id}`] ?? []).map(toComment), ...(chatMessages[id] ?? [])];
+        return [id, all.sort((a, b) => Date.parse(a.date) - Date.parse(b.date))];
+      }),
     );
-    return Object.fromEntries(ids.map((id) => [id, (raw[`t${id}`] ?? []).map(toComment)]));
   }
 
+  /** The chat of each task (new task cards have one), via im.chat.get by entity. */
+  async chatIds(ids: string[]): Promise<Record<string, string>> {
+    const raw = await this.batch<{ ID?: string | number } | string | number | null>(
+      Object.fromEntries(ids.map((id) => [`c${id}`, `im.chat.get?ENTITY_TYPE=TASKS_TASK&ENTITY_ID=${encodeURIComponent(id)}`])),
+    ).catch(() => ({}) as Record<string, null>);
+    const out: Record<string, string> = {};
+    for (const id of ids) {
+      const r = raw[`c${id}`];
+      const chat = typeof r === "object" && r ? r.ID : r;
+      if (chat) out[id] = String(chat);
+    }
+    // Second way: the chat id as a field of the task.
+    const missing = ids.filter((id) => !out[id]);
+    if (missing.length) {
+      const tasks = await this.batch<{ task?: { chatId?: string | number } }>(
+        Object.fromEntries(missing.map((id) => [`g${id}`, `tasks.task.get?taskId=${encodeURIComponent(id)}&select[]=ID&select[]=CHAT_ID`])),
+      ).catch(() => ({}) as Record<string, { task?: { chatId?: string | number } }>);
+      for (const id of missing) {
+        const chat = tasks[`g${id}`]?.task?.chatId;
+        if (chat && String(chat) !== "0") out[id] = String(chat);
+      }
+    }
+    return out;
+  }
+
+  private async chatMessagesOf(chats: Record<string, string>): Promise<Record<string, BxComment[]>> {
+    const tasks = Object.keys(chats);
+    if (!tasks.length) return {};
+    type Page = { messages?: Record<string, unknown>[]; users?: { id: number | string; name?: string }[] };
+    const raw = await this.batch<Page>(
+      Object.fromEntries(tasks.map((t) => [`m${t}`, `im.dialog.messages.get?DIALOG_ID=chat${chats[t]}&LIMIT=50`])),
+    ).catch(() => ({}) as Record<string, Page>);
+    const out: Record<string, BxComment[]> = {};
+    for (const t of tasks) {
+      const page = raw[`m${t}`];
+      const names = new Map((page?.users ?? []).map((u) => [String(u.id), u.name ?? ""]));
+      out[t] = (page?.messages ?? [])
+        .map((m) => {
+          const author = String(m.author_id ?? m.AUTHOR_ID ?? "0");
+          return {
+            id: `chat${m.id}`,
+            authorId: author,
+            authorName: author === "0" ? "Система" : names.get(author) || `#${author}`,
+            date: String(m.date ?? ""),
+            text: plainText(String(m.text ?? "")),
+          };
+        })
+        .filter((c) => c.text);
+    }
+    return out;
+  }
+
+  /** Writes into the task's chat when it has one (new task cards), else as an old-style comment. */
   async addComment(id: string | number, text: string): Promise<number> {
+    const chat = (await this.chatIds([String(id)]))[String(id)];
+    if (chat) {
+      const { result } = await this.call<number>("im.message.add", { DIALOG_ID: `chat${chat}`, MESSAGE: text });
+      return result;
+    }
     const { result } = await this.call<number>("task.commentitem.add", { TASKID: Number(id), FIELDS: { POST_MESSAGE: text } });
     return result;
   }

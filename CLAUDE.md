@@ -35,7 +35,7 @@ webhook and redirects to the bot; `/api/health` shows the state.
   voice → `LLM_MODEL` (gpt-6-luna-pro); a `ModelError` before any write tool ran retries the request on `LLM_MODEL`,
   never after a write. `npm run eval:models` (`eval/`, real OpenRouter, fake tools) compares models on typical
   requests. Keep prompts and tool names in line with the n8n originals.
-- `src/bitrix/` — optional Bitrix24 tasks via an incoming webhook (`BITRIX_WEBHOOK_URL`): `client.ts` (REST; tasks
+- `src/bitrix/` — optional Bitrix24 tasks via an incoming webhook (`BITRIX_WEBHOOK_URL`, rights: tasks, user, im): `client.ts` (REST; a task's discussion is its «Чат завдання» (im chat, `im.chat.get` by entity) plus old comments; tasks
   are only read, commented and created — never closed, changed or deleted; keep it that way), `names.ts` (people by
   name in any case form / alphabet), `report.ts` (Excel: tasks, stage, status, state from comments by AI, analytics),
   `menu.ts` (/bitrix buttons `bx:…`, no AI). The `bitrix_agent` (`agent/bitrixTools.ts`, `bitrixPrompt`) joins the

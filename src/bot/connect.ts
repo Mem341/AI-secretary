@@ -25,7 +25,7 @@ const PROMPTS: Record<Integration, string> = {
   bitrix:
     "📋 <b>Підключення Bitrix24</b>\n\n" +
     "1. У Bitrix24 відкрийте <b>Розробникам → Інше → Вхідний вебхук</b>.\n" +
-    "2. Права доступу: <b>Задачі</b> і <b>Користувачі</b> → <b>Зберегти</b>.\n" +
+    "2. Права доступу: <b>Задачі</b>, <b>Користувачі</b> і <b>Чат і повідомлення</b> (щоб читати «Чат завдання») → <b>Зберегти</b>.\n" +
     "3. Скопіюйте «Вебхук для виклику REST API» — вигляду <code>https://ваш-портал.bitrix24.ua/rest/1/abc123…/</code>\n\n" +
     "Надішліть його у відповідь на це повідомлення. Я перевірю його й одразу видалю з чату.",
   zoom:
@@ -96,7 +96,7 @@ export async function handleConnectAnswer(env: Env, msg: TgMessage, text: string
       const me = await new Bitrix({ BITRIX_WEBHOOK_URL: url }).me();
       who = [me.name, me.lastName].filter(Boolean).join(" ");
     } catch {
-      await tg.send(msg.chat.id, "😔 Bitrix24 не прийняв цей вебхук. Перевірте адресу й права «Задачі» та «Користувачі».", retry);
+      await tg.send(msg.chat.id, "😔 Bitrix24 не прийняв цей вебхук. Перевірте адресу й права «Задачі», «Користувачі» та «Чат і повідомлення».", retry);
       return true;
     }
     await saveIntegrations(env, { ...current, bitrix: url });
