@@ -152,7 +152,7 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
       `${ch.c ? "✅" : "▫️"} Google Calendar — сповіщення календаря на телефоні й компʼютері`,
       "",
       ch.t && !awake
-        ? "⚠️ <b>Telegram-нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я налаштую все сам або підкажу один крок."
+        ? "⚠️ <b>Telegram-нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я перевірю кожен крок, налаштую все сам і надішлю тестове нагадування."
         : "<i>Як це працює: на кожен обраний час ставлю сповіщення Google Calendar на вашу зустріч, а для Telegram — сигнал у моєму окремому календарі «AI-secretary · сигнали». У потрібну хвилину Google будить мене — і я пишу вам сюди. Ні cron, ні сторонніх сервісів.</i>",
     ].join("\n"),
     keyboard: [
@@ -166,7 +166,7 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
         { text: `${ch.t ? "✅" : "▫️"} Telegram`, callback_data: "set:ch:t" },
         { text: `${ch.c ? "✅" : "▫️"} Google Calendar`, callback_data: "set:ch:c" },
       ],
-      ...(ch.t && !awake ? [[{ text: "🔁 Перевірити", callback_data: "set:wake" }]] : []),
+      [{ text: "🔁 Перевірити й надіслати тест", callback_data: "set:wake" }],
     ],
   };
 }
