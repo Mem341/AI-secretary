@@ -5,6 +5,7 @@ import { connectLink, hasGmailScope, hasGoogleAuth } from "../google/oauth";
 import type { ContentPart } from "../llm/openrouter";
 import { HttpError } from "../lib/http";
 import { esc, Telegram } from "../telegram/api";
+import type { InlineKeyboard } from "../telegram/types";
 import { calendarTools } from "./calendarTools";
 import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
@@ -31,6 +32,8 @@ export interface AgentInput {
   callbackId?: string | null;
   /** Message with the pressed button (its buttons are removed afterwards). */
   callbackMessageId?: number | null;
+  /** The buttons under that message: only the pressed invitation's row goes (the morning report has several). */
+  callbackKeyboard?: InlineKeyboard | null;
   /** Photos / image documents, for the model to see. */
   images?: ContentPart[];
 }
@@ -221,6 +224,11 @@ export async function runWithFallback(env: Env, input: AgentInput): Promise<stri
   }
 }
 
+/** The buttons left after answering one invitation: every row about other events stays. */
+function remainingRows(keyboard: InlineKeyboard | null | undefined, eventId: string): InlineKeyboard {
+  return (keyboard ?? []).filter((row) => !row.some((b) => b.callback_data === `accept:${eventId}` || b.callback_data === `decline:${eventId}`));
+}
+
 /** The whole flow for one update: run the agents, reply, and settle a pressed button. */
 export async function handleWithAgents(env: Env, input: AgentInput): Promise<void> {
   const tg = new Telegram(env);
@@ -249,7 +257,11 @@ export async function handleWithAgents(env: Env, input: AgentInput): Promise<voi
     await tg.call("answerCallbackQuery", { callback_query_id: input.callbackId, text: "✅" }).catch(() => undefined);
     if (input.callbackMessageId) {
       await tg
-        .call("editMessageReplyMarkup", { chat_id: input.chatId, message_id: input.callbackMessageId, reply_markup: { inline_keyboard: [] } })
+        .call("editMessageReplyMarkup", {
+          chat_id: input.chatId,
+          message_id: input.callbackMessageId,
+          reply_markup: { inline_keyboard: rsvp ? remainingRows(input.callbackKeyboard, rsvp[2]!) : [] },
+        })
         .catch(() => undefined);
     }
   }

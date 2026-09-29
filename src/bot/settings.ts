@@ -7,6 +7,7 @@ import { clearMemory, MEMORY_CHOICES, memoryStatus, SEND } from "../agent/memory
 import { wakeReady } from "../google/pubsub";
 import { refreshCommands } from "./commands";
 import { applyEmailReminders, reminderChannels } from "../google/reminders";
+import { DIGEST_BLOCKS, DIGEST_TIMES, type DigestBlock, digestByGoogle, loadDigestChoice, timeText } from "../google/digest";
 import { integrationSource } from "../integrations";
 import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
 import type { User } from "./owner";
@@ -70,7 +71,7 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
     "",
     "<b>Сповіщення</b>",
     `⏰ Нагадування: ${marksText(marks)}`,
-    `☀️ Ранковий список зустрічей: ${digest ? "увімкнено" : "вимкнено"}`,
+    `☀️ Ранковий звіт: ${digest ? `щодня о ${timeText((await loadDigestChoice(env)).time)}` : "вимкнено"}`,
     "🔔 Нові запрошення, зміни в календарі й відповіді гостей — одразу",
   ].join("\n");
 
@@ -78,7 +79,7 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   if (google) {
     keyboard.push([
       { text: "⏰ Нагадування", callback_data: "set:rem" },
-      { text: `☀️ Ранковий список: ${digest ? "✅" : "❌"}`, callback_data: "set:digest" },
+      { text: "☀️ Ранковий звіт", callback_data: "set:dg" },
     ]);
     keyboard.push([{ text: "🧠 Памʼять", callback_data: "set:mem" }]);
   }
@@ -171,6 +172,41 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
   };
 }
 
+async function digestView(env: Env): Promise<{ html: string; keyboard: InlineKeyboard }> {
+  const c = await loadDigestChoice(env);
+  const byGoogle = await digestByGoogle(env);
+  const tick = (on: boolean) => (on ? "✅" : "▫️");
+  const html = [
+    "☀️ <b>Ранковий звіт</b>",
+    "",
+    c.on ? `Щодня о <b>${timeText(c.time)}</b>.` : "Зараз <b>вимкнено</b>.",
+    "",
+    "<b>Що в ньому:</b>",
+    "✅ 📅 Зустрічі на сьогодні — учасники, посилання, перетини, вільні вікна",
+    ...(Object.keys(DIGEST_BLOCKS) as DigestBlock[]).map((b) => `${tick(c.blocks.includes(b))} ${DIGEST_BLOCKS[b]}`),
+    "",
+    "<i>Натисніть час або пункт, щоб змінити.</i>",
+    ...(c.on && !byGoogle
+      ? ["", "⚠️ Щоб звіт приходив у ваш час, увімкніть сигнали від Google: ⏰ Нагадування → «Перевірити». Поки що — щоранку о 7:45."]
+      : []),
+  ].join("\n");
+  const times = DIGEST_TIMES.map((t) => ({ text: `${c.time === t ? "✅" : ""}${timeText(t)}`, callback_data: `set:dg:t:${t}` }));
+  const blocks = (Object.keys(DIGEST_BLOCKS) as DigestBlock[]).map((b) => ({ text: `${tick(c.blocks.includes(b))} ${DIGEST_BLOCKS[b]}`, callback_data: `set:dg:b:${b}` }));
+  return {
+    html,
+    keyboard: [
+      times.slice(0, 3),
+      times.slice(3),
+      ...[0, 2, 4].map((i) => blocks.slice(i, i + 2)),
+      [
+        { text: "👀 Показати зараз", callback_data: "set:dg:now" },
+        { text: c.on ? "🔕 Вимкнути звіт" : "🔔 Увімкнути звіт", callback_data: "set:digest" },
+      ],
+      [{ text: "⬅️ Готово", callback_data: "set:back" }],
+    ],
+  };
+}
+
 /** /settings */
 export async function showSettings(env: Env, user: User): Promise<void> {
   await refreshCommands(env);
@@ -258,11 +294,29 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     await answer();
     return show(await remindersView(env));
   }
-  if (data === "set:digest") {
-    settings.d = !(await digestEnabled(env));
+  if (data === "set:dg") {
+    await answer();
+    return show(await digestView(env));
+  }
+  if (data === "set:dg:now") {
+    await answer("Збираю звіт…");
+    await env.jobs.send({ type: "digest", chatId: user.tg_id });
+    return;
+  }
+  if (data === "set:digest" || data.startsWith("set:dg:")) {
+    const c = await loadDigestChoice(env);
+    const [, , what, value] = data.split(":");
+    if (data === "set:digest") settings.d = !c.on;
+    else if (what === "t" && DIGEST_TIMES.includes(Number(value))) settings.dg = { ...settings.dg, t: Number(value) };
+    else if (what === "b" && value && value in DIGEST_BLOCKS) {
+      const b = value as DigestBlock;
+      settings.dg = { ...settings.dg, b: c.blocks.includes(b) ? c.blocks.filter((x) => x !== b) : [...c.blocks, b] };
+    }
     await saveOwnerSettings(env, settings);
-    await answer(settings.d ? "Ранковий список увімкнено" : "Ранковий список вимкнено");
-    return show(await mainView(env, user));
+    await answer(data === "set:digest" ? (settings.d ? "Ранковий звіт увімкнено" : "Ранковий звіт вимкнено") : "Збережено");
+    // The report's signal moves to the new time.
+    await applyEmailReminders(env).catch(() => 0);
+    return show(await digestView(env));
   }
   if (data === "set:ch:t" || data === "set:ch:c") {
     const ch = await reminderChannels(env);

@@ -61,6 +61,7 @@ export interface TgMessage {
   document?: TgFile;
   contact?: { phone_number: string; user_id?: number };
   media_group_id?: string;
+  reply_markup?: { inline_keyboard?: InlineKeyboard };
 }
 
 export interface TgCallbackQuery {

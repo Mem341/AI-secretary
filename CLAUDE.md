@@ -45,7 +45,9 @@ webhook and redirects to the bot; `/api/health` shows the state.
   `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /bitrix /reset /help; everything else
   goes to the agents.
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
-  format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest and meeting reminders),
+  format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (meeting reminders), `digest.ts` (the morning report: meetings with guests/links/overlaps/free
+  windows plus the blocks ticked in /settings → ☀️ — invitations with ✅/❌, mail, AI mail summary, Bitrix24, tomorrow; at
+  the owner's time via a `digest:` signal in the signal calendar, the daily cron only as a fallback),
   Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
 - Meeting reminders use Google as the clock — no cron, no outside service (the owner forbade both). Each chosen time
   gives BOTH a Telegram message and a Google Calendar notification (channels chosen in /settings, `OwnerSettings.n`):

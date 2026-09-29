@@ -138,6 +138,8 @@ export interface OwnerSettings {
   n?: { t?: boolean; c?: boolean };
   /** The bot's signal calendar (google/signals.ts). */
   sc?: string;
+  /** The morning report (google/digest.ts): t = time, minutes after midnight; b = the blocks ticked. */
+  dg?: { t?: number; b?: string[] };
 }
 
 /** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
