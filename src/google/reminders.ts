@@ -8,7 +8,7 @@ import { Calendar, type GEvent } from "./calendar";
 import { loadOwnerSettings, type OwnerSettings } from "./oauth";
 import { wakeReady } from "./pubsub";
 import { digestSignals, loadDigestChoice, sendDigest } from "./digest";
-import { DIGEST_PREFIX, type Signal, signalCalendar, signalEvent, syncSignals, TEST_PREFIX } from "./signals";
+import { DIGEST_PREFIX, type Signal, signalCalendar, signalEvent, syncSignals } from "./signals";
 import { type GMessage, Gmail, toMailMessage } from "./gmail";
 import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
 
@@ -113,9 +113,14 @@ export interface Channels {
   c: boolean;
 }
 
-export async function reminderChannels(env: Env): Promise<Channels> {
-  const s = await loadOwnerSettings(env).catch((): OwnerSettings => ({}));
-  return { t: s.n?.t ?? true, c: s.n?.c ?? true };
+/** Every reminder goes to both (the owner asked for no channel buttons; an older choice in `n` is ignored). */
+export async function reminderChannels(_env: Env): Promise<Channels> {
+  return { t: true, c: true };
+}
+
+/** Whether new emails are sent to the chat (/settings → «📧 Нова пошта в бот»); reminder signals always work. */
+export async function mailNotices(env: Env): Promise<boolean> {
+  return (await loadOwnerSettings(env).catch((): OwnerSettings => ({}))).ml ?? true;
 }
 
 const emails = (marks: number[]) => marks.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
@@ -230,19 +235,6 @@ export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now(
     if (!props.aisSent && firstTime(`remind:${target}`, DAY) && (await signal.cal.claimPrivate(signal.ev, { ...props, aisSent: "1" }))) {
       await sendDigest(env, now);
     }
-    await gmail.trash(m.id).catch(() => undefined);
-    return true;
-  }
-  if (target?.startsWith(TEST_PREFIX)) {
-    const started = Number(target.slice(TEST_PREFIX.length));
-    if (firstTime(`remind:${target}`, DAY)) {
-      await new Telegram(env).send(
-        env.OWNER_TELEGRAM_ID,
-        "✅ <b>Тест пройдено.</b> Google надіслав сигнал, пошта одразу розбудила мене — нагадування про зустрічі приходитимуть самі в обрані хвилини.",
-      );
-    }
-    const sc = (await loadOwnerSettings(env).catch((): OwnerSettings => ({}))).sc;
-    if (sc && started) await new Calendar(env, sc).deleteSilently(id).catch(() => undefined);
     await gmail.trash(m.id).catch(() => undefined);
     return true;
   }

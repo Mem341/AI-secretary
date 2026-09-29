@@ -20,7 +20,30 @@ const MAIL = [
 
 const matches = (patterns: RegExp[], text: string) => patterns.some((p) => p.test(text));
 
-const TASKS = [/задач|задан|таск|\btask|бітрікс|битрикс|bitrix|дедлайн|доручен|поручен|прострочен|просрочен/];
+const TASKS = [
+  /задач|задан|таск|\btask|бітрікс|битрикс|bitrix|б24|b24|дедлайн|доручен|поручен|доручи|поручи|прострочен|просрочен/,
+  /спостеріга|спостерега|наблюдател|співвиконав|соисполнит|постановник|виконавц|исполнител|чат задач|по задач/,
+];
+
+/**
+ * The words that surely start a new request of that kind: a meeting, an email. Dates («післязавтра») and «напиши»
+ * are not among them — they also come in the answer to the bot's question about a task.
+ */
+const SURE: Record<"calendar_agent" | "gmail_agent" | "bitrix_agent", RegExp[]> = {
+  calendar_agent: CALENDAR.slice(0, 3),
+  gmail_agent: MAIL.slice(0, 2),
+  bitrix_agent: TASKS,
+};
+
+/**
+ * Where the owner's answer goes while an agent waits for it (it asked a question): back to that agent, unless the
+ * message is plainly a new request for another one.
+ */
+export function routeFollowUp(input: AgentInput, waiting: "calendar_agent" | "gmail_agent" | "bitrix_agent", bitrix = false): "calendar_agent" | "gmail_agent" | "bitrix_agent" | null {
+  const other = routeByKeywords(input, bitrix);
+  if (!other || other === waiting) return waiting;
+  return matches(SURE[other], input.text.toLowerCase()) && !matches(SURE[waiting], input.text.toLowerCase()) ? other : waiting;
+}
 
 export function routeByKeywords(input: AgentInput, bitrix = false): "calendar_agent" | "gmail_agent" | "bitrix_agent" | null {
   // A reply to the bot's own notice names its subject exactly.

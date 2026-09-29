@@ -140,6 +140,8 @@ export interface OwnerSettings {
   sc?: string;
   /** The morning report (google/digest.ts): t = time, minutes after midnight; b = the blocks ticked. */
   dg?: { t?: number; b?: string[] };
+  /** New emails sent to the chat (false = only the calendar's reminder signals are read). */
+  ml?: boolean;
   /** The last version whose «what is new» the owner got (changelog.ts, bot/news.ts). */
   v?: number;
 }

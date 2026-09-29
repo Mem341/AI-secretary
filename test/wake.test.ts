@@ -290,7 +290,7 @@ describe("a signal from the bot's calendar", () => {
   });
 });
 
-describe("«🔁 Перевірити»: every link of the chain, then a real test signal", () => {
+describe("«🔁 Налаштувати»: every link of the chain", () => {
   it("an old Google connection (API enabled, but no new permissions): says to reconnect, touches nothing", async () => {
     await connectGoogle();
     const calls = mockFetch([]);
@@ -303,12 +303,12 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
     expect(JSON.stringify(msg.reply_markup)).toContain("з усіма галочками");
   });
 
-  it("all set: creates the test signal; Google's email for it comes back as «✅ Тест пройдено»", async () => {
+  it("all set: every step ✅ and no test event left in the calendar", async () => {
     await connectGoogle({ scope: `${FULL_SCOPE} https://www.googleapis.com/auth/calendar.app.created` });
     const shadows = new Map<string, Record<string, unknown>>();
     const calls = mockFetch([
       fakePubSub().route,
-      (url, init) => {
+      (url) => {
         if (url.hostname !== "gmail.googleapis.com") return undefined;
         if (url.pathname.endsWith("/labels")) return Response.json({ labels: [{ id: "L", name: "AI-secretary-seen" }] });
         if (url.pathname.endsWith("/messages")) return Response.json({ messages: [] });
@@ -323,41 +323,19 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
             shadows.set(id, JSON.parse(init.bodyText));
             return Response.json({ id });
           }
-          if (init.method === "DELETE") {
-            shadows.delete(id);
-            return new Response(null, { status: 204 });
-          }
-          if (id !== "events") return shadows.has(id) ? Response.json(shadows.get(id)) : new Response("", { status: 404 });
           return Response.json({ items: [...shadows.values()] });
         }
         return Response.json({ items: [] });
       },
     ]);
     const { env } = testEnv({ GOOGLE_PROJECT_ID: "p1" });
-    await saveOwnerSettings(env, { r: [30, 10], sc: "sig@x" });
+    await saveOwnerSettings(env, { r: [30, 10], sc: "sig@x", d: false });
     const { reportWake } = await import("../src/google/wake");
     await reportWake(env, env.OWNER_TELEGRAM_ID);
     const report = String(tgCalls(calls, "sendMessage").at(-1)!.text);
     expect(report).toContain("✅ <b>Pub/Sub");
-    expect(report).toContain("Тест запущено");
-    const [sid, test] = [...shadows.entries()].find(([, v]) => String((v.extendedProperties as { private: { aisFor: string } }).private.aisFor).startsWith("test:"))!;
-    expect(test).toMatchObject({ status: "confirmed", reminders: { overrides: [{ method: "email", minutes: 3 }] } });
-
-    const { handleReminderEmail } = await import("../src/google/reminders");
-    const email = {
-      id: "m",
-      threadId: "t",
-      payload: {
-        headers: [
-          { name: "From", value: "Google Calendar <calendar-notification@google.com>" },
-          // Whatever the subject's language: a signal from the bot's calendar is recognised by its id.
-          { name: "Subject", value: "Értesítés: 🧪 Тест" },
-        ],
-        body: { data: Buffer.from(`https://calendar.google.com/calendar/event?action=VIEW&eid=${Buffer.from(`${sid} sig@x`).toString("base64url")}`).toString("base64url") },
-      },
-    } as never;
-    expect(await handleReminderEmail(env, email)).toBe(true);
-    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Тест пройдено");
-    expect(shadows.has(sid)).toBe(false);
+    expect(report).toContain("Усе налаштовано");
+    expect(report).not.toContain("Тест");
+    expect(shadows.size).toBe(0);
   });
 });

@@ -6,7 +6,7 @@ import type { InlineKeyboard } from "../telegram/types";
 import { clearMemory, MEMORY_CHOICES, memoryStatus, SEND } from "../agent/memory";
 import { wakeReady } from "../google/pubsub";
 import { refreshCommands } from "./commands";
-import { applyEmailReminders, reminderChannels } from "../google/reminders";
+import { applyEmailReminders, mailNotices } from "../google/reminders";
 import { DIGEST_BLOCKS, DIGEST_TIMES, type DigestBlock, digestByGoogle, loadDigestChoice, timeText } from "../google/digest";
 import { integrationSource } from "../integrations";
 import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
@@ -71,6 +71,7 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
     "",
     "<b>Сповіщення</b>",
     `⏰ Нагадування: ${marksText(marks)}`,
+    ...(gmail ? [`📧 Нова пошта в бот: ${(await mailNotices(env)) ? "так" : "ні"}`] : []),
     `☀️ Ранковий звіт: ${digest ? `щодня о ${timeText((await loadDigestChoice(env)).time)}` : "вимкнено"}`,
     "🔔 Нові запрошення, зміни в календарі й відповіді гостей — одразу",
   ].join("\n");
@@ -81,7 +82,10 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
       { text: "⏰ Нагадування", callback_data: "set:rem" },
       { text: "☀️ Ранковий звіт", callback_data: "set:dg" },
     ]);
-    keyboard.push([{ text: "🧠 Памʼять", callback_data: "set:mem" }]);
+    keyboard.push([
+      ...(gmail ? [{ text: `📧 Нова пошта в бот: ${(await mailNotices(env)) ? "✅" : "❌"}`, callback_data: "set:mail" }] : []),
+      { text: "🧠 Памʼять", callback_data: "set:mem" },
+    ]);
   }
   keyboard.push([{ text: google ? "🔄 Перепідключити Google" : "🔗 Підключити Google", url: await connectLink(env) }]);
   // Bitrix24 and Zoom: connected right here (the bot asks for the key); set by a deployment variable — nothing to do.
@@ -140,35 +144,25 @@ async function memoryView(env: Env, confirmClear = false): Promise<{ html: strin
 async function remindersView(env: Env): Promise<{ html: string; keyboard: InlineKeyboard }> {
   const marks = await reminderMarks(env);
   const awake = await wakeReady(env);
-  const ch = await reminderChannels(env);
   const button = (m: number) => ({ text: `${marks.includes(m) ? "✅" : "▫️"} ${m === 60 ? "1 год" : `${m} хв`}`, callback_data: `set:r:${m}` });
   return {
     html: [
       "⏰ <b>Нагадування про зустрічі</b>",
       "",
-      "<b>Коли:</b> оберіть один чи кілька варіантів — натисніть ще раз, щоб прибрати.",
-      `Зараз: ${marksText(marks)}`,
+      "Оберіть, за скільки до зустрічі нагадувати — можна кілька. Натисніть ще раз, щоб прибрати.",
+      `<b>Зараз:</b> ${marksText(marks)}`,
       "",
-      "<b>Куди:</b>",
-      `${ch.t ? "✅" : "▫️"} Telegram — повідомлення від мене`,
-      `${ch.c ? "✅" : "▫️"} Google Calendar — сповіщення календаря на телефоні й компʼютері`,
-      "",
-      ch.t && !awake
-        ? "⚠️ <b>Telegram-нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я перевірю кожен крок, налаштую все сам і надішлю тестове нагадування."
-        : "<i>Як це працює: на кожен обраний час ставлю сповіщення Google Calendar на вашу зустріч, а для Telegram — сигнал у моєму окремому календарі «AI-secretary · сигнали». У потрібну хвилину Google будить мене — і я пишу вам сюди. Ні cron, ні сторонніх сервісів.</i>",
+      "Кожне нагадування приходить і сюди, в Telegram, і сповіщенням Google Calendar.",
+      ...(marks.length && !awake ? ["", "⚠️ <b>Нагадування в Telegram ще не налаштовані.</b> Натисніть «🔁 Налаштувати» — я все зроблю сам або скажу, чого бракує."] : []),
     ].join("\n"),
     keyboard: [
       REMINDER_CHOICES.slice(0, 3).map(button),
       REMINDER_CHOICES.slice(3).map(button),
+      ...(marks.length && !awake ? [[{ text: "🔁 Налаштувати", callback_data: "set:wake" }]] : []),
       [
         { text: "🔕 Не нагадувати", callback_data: "set:r:off" },
         { text: "⬅️ Готово", callback_data: "set:back" },
       ],
-      [
-        { text: `${ch.t ? "✅" : "▫️"} Telegram`, callback_data: "set:ch:t" },
-        { text: `${ch.c ? "✅" : "▫️"} Google Calendar`, callback_data: "set:ch:c" },
-      ],
-      [{ text: "🔁 Перевірити й надіслати тест", callback_data: "set:wake" }],
     ],
   };
 }
@@ -319,14 +313,11 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     await applyEmailReminders(env).catch(() => 0);
     return show(await digestView(env));
   }
-  if (data === "set:ch:t" || data === "set:ch:c") {
-    const ch = await reminderChannels(env);
-    const which = data.endsWith(":t") ? "t" : "c";
-    settings.n = { ...ch, [which]: !ch[which] };
+  if (data === "set:mail") {
+    settings.ml = !(await mailNotices(env));
     await saveOwnerSettings(env, settings);
-    await answer(`${which === "t" ? "Telegram" : "Google Calendar"}: ${settings.n[which] ? "увімкнено" : "вимкнено"}`);
-    await applyEmailReminders(env).catch(() => 0);
-    return show(await remindersView(env));
+    await answer(settings.ml ? "Нова пошта приходитиме сюди" : "Нову пошту більше не пересилаю");
+    return show(await mainView(env, user));
   }
   if (data.startsWith("set:r:")) {
     const value = data.slice("set:r:".length);

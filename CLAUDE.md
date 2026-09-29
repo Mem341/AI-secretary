@@ -50,14 +50,15 @@ webhook and redirects to the bot; `/api/health` shows the state.
   the owner's time via a `digest:` signal in the signal calendar, the daily cron only as a fallback),
   Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
 - Meeting reminders use Google as the clock — no cron, no outside service (the owner forbade both). Each chosen time
-  gives BOTH a Telegram message and a Google Calendar notification (channels chosen in /settings, `OwnerSettings.n`):
+  gives BOTH a Telegram message and a Google Calendar notification (always both — the owner asked for no channel buttons):
   the meeting carries popups; its Telegram email signals sit on a shadow event in the bot's own calendar
   «AI-secretary · сигнали» (`google/signals.ts`, scope calendar.app.created) — Google allows only 5 reminders per event.
   `applyEmailReminders` keeps both in step (connect, daily, calendar push, settings);
   Google sends the email at that minute, Gmail push wakes the bot, `handleReminderEmail` sends the Telegram reminder
   and trashes the email. The Gmail push itself is set up by the bot in the OAuth client's project (`pubsub.ts`
-  `setupGoogleWake`, scope pubsub; the owner only enables the Cloud Pub/Sub API); /settings → ⏰ → «Перевірити» (`wake.ts`
-  `reportWake`) checks each link in plain words and sends a test signal (`TEST_PREFIX`) that comes back as «✅ Тест пройдено».
+  `setupGoogleWake`, scope pubsub; the owner only enables the Cloud Pub/Sub API); /settings → ⏰ → «🔁 Налаштувати», shown only while
+  reminders do not work (`wake.ts` `reportWake`), sets up and checks each link in plain words (no test event — the owner
+  asked). /settings → «📧 Нова пошта в бот» (`OwnerSettings.ml`) switches the new-mail notices; reminder signals always work.
 - `vercel.json`: the one daily cron (digest, renewing the calendar channel and the Gmail watch) — do not add more;
   /api/cron/reminders stays as a manual check of reminders.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived
@@ -84,7 +85,7 @@ webhook and redirects to the bot; `/api/health` shows the state.
   choice, `OwnerSettings.m`), a new pair pushes out the oldest; plus facts the agents save with `remember_fact`. The
   latest `SEND` pairs (12 h) go to the model as real chat turns (`conversationHistory`) with the rule not to redo what
   was done (`conversationBlock`); each answer keeps the agent that gave it, so a reply to the bot's question goes back
-  to that agent (`pendingAgent`, 30 min). `delete_event` refuses unless the CURRENT message asks (`deletionAllowed`);
+  to that agent (`pendingAgent`, 30 min; `route.ts` `routeFollowUp` — only sure words of another topic take it elsewhere). `delete_event` refuses unless the CURRENT message asks (`deletionAllowed`);
   several / «all» only after «так». In JS regexes `\b` does not work next to Cyrillic letters. Loaded at the start of
   an agent request, written after the answer. Without the Drive scope it stays in the instance.
 - Bursts of forwarded messages (`session.ts`): in memory, self-expiring; losing it may cost a duplicate, never data.

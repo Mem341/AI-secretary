@@ -12,7 +12,7 @@ import { toTelegramHtml } from "./html";
 import { conversationBlock, conversationHistory, factsBlock, loadMemory, memoryTools, pendingAgent, rememberTurn, saveMemory } from "./memory";
 import { bitrixPrompt, calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
 import { bitrixTools } from "./bitrixTools";
-import { routeByKeywords } from "./route";
+import { routeByKeywords, routeFollowUp } from "./route";
 import { ModelError, runAgent, str, type Tool } from "./runner";
 
 /**
@@ -144,10 +144,8 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
   // pass it on and repeat the answer — two model calls for nothing).
   // The owner answering the bot's own question («Яка назва?» → «ТЕСТ») goes back to the agent that asked, unless it is
   // clearly a new request of another kind.
-  const keywords = routeByKeywords(input, bitrixConfigured(env));
   const waiting = input.replyRef || input.inputType === "callback" ? null : (pendingAgent() as AgentName | null);
-  const short = input.text.trim().split(/\s+/).length <= 8;
-  const direct = waiting && (!keywords || short) ? waiting : keywords;
+  const direct = waiting ? routeFollowUp(input, waiting, bitrixConfigured(env)) : routeByKeywords(input, bitrixConfigured(env));
   if (direct) {
     const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
     return output;

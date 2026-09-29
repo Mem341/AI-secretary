@@ -127,7 +127,8 @@ export function conversationBlock(now = Date.now()): string {
 export function pendingAgent(now = Date.now()): string | null {
   const last = state.log.at(-1);
   if (!last || last.who !== "b" || !last.a || now - last.t > PENDING_MS) return null;
-  return last.text.includes("?") ? last.a : null;
+  // A question, or a request for details («Надішліть ці дані», «уточніть»).
+  return /\?|уточн|надішл|вкаж|напишіть|підтверд|оберіть|назв[уі]|пришлите|укажите/i.test(last.text) ? last.a : null;
 }
 
 export function facts(): string[] {

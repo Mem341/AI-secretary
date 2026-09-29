@@ -14,8 +14,6 @@ import { loadGrant, loadOwnerSettings, saveOwnerSettings } from "./oauth";
 
 const NAME = "AI-secretary · сигнали";
 const FOR = "aisFor";
-/** aisFor of the test signal from «🔁 Перевірити» (no meeting behind it). */
-export const TEST_PREFIX = "test:";
 /** aisFor of the morning report's signal for a day ("digest:2026-10-01"), google/digest.ts. */
 export const DIGEST_PREFIX = "digest:";
 
@@ -115,8 +113,6 @@ export async function syncSignals(env: Env, calendarId: string, wanted: Signal[]
     for (const e of existing) {
       const target = e.extendedProperties?.private?.[FOR];
       if (!target || keep.has(e.id)) continue;
-      // A running test signal stays until its time has passed.
-      if (target.startsWith(TEST_PREFIX) && Date.parse(e.end?.dateTime ?? "") > now) continue;
       drop.add(e.id);
     }
   }

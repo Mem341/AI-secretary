@@ -208,3 +208,50 @@ describe("one session: the bot's question gets the owner's answer", () => {
     expect(lastBotMessage("ТЕСТ").text).toContain("створено");
   });
 });
+
+describe("the answer to the task agent's question stays with it", () => {
+  it("«ТЕСТ … Вероника бутенко … послезавтра … спостерігач» is not a calendar request", async () => {
+    const { routeFollowUp } = await import("../src/agent/route");
+    const input = (text: string) => ({ chatId: OWNER, inputType: "text" as const, text });
+    const answer = "ТЕСТ ТЕСТОВИЧ\nВероника бутенко\nпослезавтра\nя буду как спостеригатель\nприоритет нормальный";
+    expect(routeFollowUp(input(answer), "bitrix_agent", true)).toBe("bitrix_agent");
+    // A plainly new request of another kind still goes there.
+    expect(routeFollowUp(input("створи зустріч з Іваном завтра о 10"), "bitrix_agent", true)).toBe("calendar_agent");
+    expect(routeFollowUp(input("так"), "calendar_agent", true)).toBe("calendar_agent");
+  });
+
+  it("«Надішліть ці дані» counts as the bot waiting for an answer", async () => {
+    const { loadMemory, rememberTurn, pendingAgent } = await import("../src/agent/memory");
+    const { env } = testEnv();
+    mockFetch([]);
+    await loadMemory(env);
+    await rememberTurn(env, "Надо новую задачу поставить", "Уточніть: назва, відповідальний, дедлайн. Надішліть ці дані, і я підготую превʼю.", Date.now(), "bitrix_agent");
+    expect(pendingAgent()).toBe("bitrix_agent");
+  });
+});
+
+describe("/settings → «📧 Нова пошта в бот»", () => {
+  it("off: new emails are not sent to the chat, but they are still marked as read by the bot", async () => {
+    await connectGoogle({ scope: GMAIL_SCOPE });
+    let marked = 0;
+    const calls = mockFetch([
+      (url, init) => {
+        if (url.hostname !== "gmail.googleapis.com") return undefined;
+        if (url.pathname.endsWith("/labels")) return Response.json({ labels: [{ id: "L", name: "AI-secretary-seen" }] });
+        if (url.pathname.endsWith("/messages")) return Response.json({ messages: [{ id: "m9" }] });
+        if (url.pathname.endsWith("/modify")) {
+          marked++;
+          return Response.json({});
+        }
+        return Response.json({ id: "m9", threadId: "t", snippet: "Привіт", payload: { headers: [{ name: "From", value: "Анна <ann@x.ua>" }, { name: "Subject", value: "Договір" }] } });
+      },
+    ]);
+    const { env } = testEnv();
+    const { saveOwnerSettings } = await import("../src/google/oauth");
+    const { gmailSync } = await import("../src/google/gmailPush");
+    await saveOwnerSettings(env, { ml: false });
+    expect(await gmailSync(env)).toBe(0);
+    expect(marked).toBe(1);
+    expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("Нова пошта"))).toBe(false);
+  });
+});

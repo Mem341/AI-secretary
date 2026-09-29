@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type Env, gmailTopic } from "../env";
-import { handleReminderEmail } from "./reminders";
+import { handleReminderEmail, mailNotices } from "./reminders";
 import { HttpError } from "../lib/http";
 import { formatTime, toKyivDate } from "../lib/time";
 import { firstTime } from "../session";
@@ -86,6 +86,7 @@ export async function gmailSync(env: Env): Promise<number> {
       const m = await gmail.call<GMessage>(`/messages/${encodeURIComponent(id)}?format=full`);
       // The calendar's reminder email: a meeting reminder instead of a "new mail" notice.
       if (await handleReminderEmail(env, m)) continue;
+      if (!(await mailNotices(env))) continue;
       await new Telegram(env).send(env.OWNER_TELEGRAM_ID, hiddenData({ k: "mail", id } satisfies MailRef) + newMailNotice(m));
       sent++;
     } catch (err) {

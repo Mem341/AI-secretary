@@ -1,5 +1,4 @@
 import type { Env } from "../env";
-import { formatTime, MINUTE } from "../lib/time";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
 import { Calendar } from "./calendar";
@@ -8,7 +7,7 @@ import { seenLabel, startGmailWatch } from "./gmailPush";
 import { connectLink, loadGrant, loadOwnerSettings, missingScopes, saveOwnerSettings } from "./oauth";
 import { ensureGmailPush, type PushSetup, pubsubApiLink, setupGoogleWake } from "./pubsub";
 import { applyEmailReminders } from "./reminders";
-import { signalCalendar, TEST_PREFIX, shadowId } from "./signals";
+import { signalCalendar } from "./signals";
 
 export { setupGoogleWake };
 
@@ -55,8 +54,8 @@ async function recentSignals(gmail: Gmail): Promise<{ handled: number; unseen: n
 }
 
 /**
- * «🔁 Перевірити»: every link of the reminder chain checked in order and said in plain words, then a real test —
- * a signal a few minutes ahead; when Google's email for it wakes the bot, the owner gets «✅ Тест пройдено».
+ * «🔁 Налаштувати» (shown while reminders are not working): every link of the reminder chain set up and checked in
+ * order, said in plain words.
  */
 export async function reportWake(env: Env, chatId: number, now = Date.now()): Promise<void> {
   const tg = new Telegram(env);
@@ -119,7 +118,7 @@ export async function reportWake(env: Env, chatId: number, now = Date.now()): Pr
 
   try {
     const r = await recentSignals(new Gmail(env));
-    if (r.unseen) lines.push(`⚠️ <b>Листи-сигнали:</b> Google надіслав ${r.unseen}, але до мене вони не дійшли (мабуть, до цієї перевірки Pub/Sub ще не був налаштований). Тест нижче покаже, чи тепер доходять.`);
+    if (r.unseen) lines.push(`⚠️ <b>Листи-сигнали:</b> Google надіслав ${r.unseen}, але до мене вони не дійшли (мабуть, до цієї перевірки Pub/Sub ще не був налаштований). Тепер Pub/Sub налаштовано — наступні дійдуть.`);
     else if (r.unread.length) lines.push(`⚠️ <b>Листи-сигнали:</b> не розпізнав — «${esc(r.unread[0]!.slice(0, 80))}».`);
     else if (r.spam) lines.push(`⚠️ <b>Листи-сигнали:</b> ${r.spam} у «Спамі» — позначте їх «Не спам».`);
     else lines.push(`✅ <b>Листи-сигнали за добу:</b> оброблено ${r.handled}`);
@@ -127,26 +126,7 @@ export async function reportWake(env: Env, chatId: number, now = Date.now()): Pr
     lines.push(`⚠️ Не зміг переглянути пошту: ${errText(err)}`);
   }
 
-  if (sc) {
-    // A real signal: starts in 5 minutes, Google's email for it 3 minutes before — so in about 2 minutes.
-    const start = Math.ceil((now + 5 * MINUTE) / MINUTE) * MINUTE;
-    try {
-      await new Calendar(env, sc).putEvent({
-        id: shadowId(`${TEST_PREFIX}${now}`),
-        summary: "🧪 Тест нагадувань",
-        status: "confirmed",
-        start: { dateTime: new Date(start).toISOString() },
-        end: { dateTime: new Date(start + 5 * MINUTE).toISOString() },
-        transparency: "transparent",
-        visibility: "private",
-        reminders: { useDefault: false, overrides: [{ method: "email", minutes: 3 }] },
-        extendedProperties: { private: { aisFor: `${TEST_PREFIX}${now}` } },
-      } as never);
-      lines.push("", `🧪 <b>Тест запущено.</b> Близько ${formatTime(new Date(start - 3 * MINUTE))} Google надішле сигнал, і я напишу «✅ Тест пройдено». Якщо до ${formatTime(new Date(start + 2 * MINUTE))} нічого не прийде — натисніть «Перевірити ще раз», я скажу, де обірвалося.`);
-    } catch (err) {
-      lines.push("", `❌ Не зміг запустити тест: ${errText(err)}`);
-    }
-  }
+  lines.push("", sc ? "✅ <b>Усе налаштовано.</b> Нагадування приходитимуть самі в обрані хвилини." : "⚠️ Календар сигналів не створено — перепідключіть Google з усіма галочками.");
   keyboard.push(retry);
   await send();
 }
