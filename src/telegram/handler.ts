@@ -1,6 +1,7 @@
 import { forget } from "../agent/memory";
 import { helpText, sendConnectGoogle, startOnboarding } from "../bot/onboarding";
 import { handleSettingsButton, showSettings } from "../bot/settings";
+import { type BitrixAction, showBitrixMenu } from "../bitrix/menu";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { connectWithCode } from "../google/connect";
@@ -136,6 +137,10 @@ async function handleCommand(env: Env, user: User, text: string): Promise<boolea
       forget("");
       await tg.send(user.tg_id, "🧹 Контекст розмови очищено.");
       return true;
+    case "/bitrix":
+    case "/tasks":
+      await showBitrixMenu(env, user.tg_id);
+      return true;
     case "/connect":
       if (await hasGoogleAuth(env)) await tg.send(user.tg_id, "Google уже підключено. Перепідключити — /settings.");
       else await sendConnectGoogle(env);
@@ -152,6 +157,12 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   const user = await authorize(env, cq.from);
   if (!user) return;
   const chatId = cq.message?.chat.id ?? user.tg_id;
+  const bx = /^bx:(my|overdue|stats|report)$/.exec(cq.data ?? "");
+  if (bx) {
+    await new Telegram(env).answerCallback(cq.id, bx[1] === "report" ? "Готую звіт…" : undefined).catch(() => undefined);
+    await env.jobs.send({ type: "bitrix", chatId, action: bx[1] as BitrixAction });
+    return;
+  }
   if (cq.data?.startsWith("set:") && cq.message) {
     await handleSettingsButton(env, user, cq.data, cq.id, cq.message.message_id);
     return;

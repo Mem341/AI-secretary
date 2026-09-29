@@ -1,4 +1,5 @@
 import { type AgentInput, handleWithAgents } from "./agent";
+import { type BitrixAction, runBitrixAction } from "./bitrix/menu";
 import { helpText } from "./bot/onboarding";
 import { digestEnabled } from "./bot/settings";
 import { type Env, gmailPushConfigured } from "./env";
@@ -33,11 +34,13 @@ export type Job =
   /** Report emails that arrived since the last Gmail push. */
   | { type: "gmail_sync" }
   /** Telegram reminders shortly before meetings (/api/cron/reminders). */
-  | { type: "reminders" };
+  | { type: "reminders" }
+  /** A /bitrix menu button: task list, analytics or the Excel report. */
+  | { type: "bitrix"; chatId: number; action: BitrixAction };
 
 export const JOB_ATTEMPTS = 3;
 /** Agent runs change things (events, mail): never repeated automatically, as in n8n. */
-const ONCE = new Set<Job["type"]>(["agent", "batch", "voice"]);
+const ONCE = new Set<Job["type"]>(["agent", "batch", "voice", "bitrix"]);
 
 const PHOTO_MARK = /^\[\[photo:([^\]]+)\]\]$/;
 
@@ -118,6 +121,8 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     case "reminders":
       if (await hasGoogleAuth(env)) await sendReminders(env);
       return;
+    case "bitrix":
+      return withTyping(env, job.chatId, () => runBitrixAction(env, job.chatId, job.action));
   }
 }
 
@@ -131,7 +136,7 @@ async function handleRevoked(env: Env): Promise<void> {
 /** Tells the owner a job finally failed so the request is not lost silently. */
 async function reportJobFailure(env: Env, job: Job): Promise<void> {
   const tg = new Telegram(env);
-  if (job.type === "agent" || job.type === "batch") {
+  if (job.type === "agent" || job.type === "batch" || job.type === "bitrix") {
     await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося обробити запит. Спробуйте ще раз.").catch(() => undefined);
   } else if (job.type === "voice") {
     await tg.send(job.chatId, "😔 Не вдалося обробити голосове. Спробуйте ще раз.", { replyTo: job.messageId }).catch(() => undefined);

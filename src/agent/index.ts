@@ -1,6 +1,6 @@
 import { loadDirectory } from "../bot/contacts";
 import { loadOwner } from "../bot/owner";
-import type { Env } from "../env";
+import { bitrixConfigured, type Env } from "../env";
 import { connectLink, hasGmailScope, hasGoogleAuth } from "../google/oauth";
 import type { ContentPart } from "../llm/openrouter";
 import { HttpError } from "../lib/http";
@@ -9,7 +9,8 @@ import { calendarTools } from "./calendarTools";
 import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
 import { history, remember } from "./memory";
-import { calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
+import { bitrixPrompt, calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
+import { bitrixTools } from "./bitrixTools";
 import { routeByKeywords } from "./route";
 import { ModelError, runAgent, str, type Tool } from "./runner";
 
@@ -52,7 +53,7 @@ function withImages(text: string, images: ContentPart[] | undefined): string | C
   return images?.length ? [{ type: "text", text }, ...images] : text;
 }
 
-type AgentName = "calendar_agent" | "gmail_agent";
+type AgentName = "calendar_agent" | "gmail_agent" | "bitrix_agent";
 
 /** One sub-agent (n8n "Calendar Agent" / "Gmail Agent" sub-workflow) on the user's message, with its own memory. */
 /** One request's run: the model for it, and whether a tool already changed something (then it is never retried). */
@@ -62,7 +63,7 @@ export interface RunContext {
 }
 
 /** Tools that only read; any other tool call changes the calendar or the mailbox. */
-const READ_ONLY = /^(get_|check_free_busy|msg_get|thread_get|draft_get|label_get)/;
+const READ_ONLY = /^(get_|check_free_busy|msg_get|thread_get|draft_get|label_get|find_|list_tasks|task_stats)/;
 
 function tracking(ctx: RunContext) {
   return (name: string) => {
@@ -81,6 +82,21 @@ export function modelFor(env: Env, input: AgentInput): string {
 }
 
 async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date, ctx: RunContext): Promise<string> {
+  if (name === "bitrix_agent") {
+    if (!bitrixConfigured(env)) return "Bitrix24 не підключено (потрібен вхідний вебхук Bitrix24 у змінній BITRIX_WEBHOOK_URL).";
+    const memoryKey = `${name}:${input.chatId}`;
+    const answer = await runAgent(env, {
+      model: ctx.model,
+      onTool: tracking(ctx),
+      system: bitrixPrompt(await loadOwner(env), now),
+      history: history(memoryKey),
+      input: withImages(userMessage, input.images),
+      tools: bitrixTools(env),
+      maxIterations: 12,
+    });
+    remember(memoryKey, userMessage, answer);
+    return answer;
+  }
   if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
   if (name === "gmail_agent" && !(await hasGmailScope(env))) {
     return `Немає доступу до Gmail. Нехай власник перепідключить Google (/settings) і поставить галочки для пошти: ${await connectLink(env)}`;
@@ -122,7 +138,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
 
   // Plain code first: an obvious calendar or mail request goes straight to its agent (the Supervisor would only
   // pass it on and repeat the answer — two model calls for nothing).
-  const direct = routeByKeywords(input);
+  const direct = routeByKeywords(input, bitrixConfigured(env));
   if (direct) {
     const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
     remember(`supervisor:${key}`, chatInput, output);
@@ -146,7 +162,7 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
 
   const output = await runAgent(env, {
     model: ctx.model,
-    system: supervisorPrompt(),
+    system: supervisorPrompt(bitrixConfigured(env)),
     history: history(`supervisor:${key}`),
     input: withImages(chatInput, input.images),
     tools: [
@@ -155,6 +171,14 @@ export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext
         "Calendar Agent — manages Google Calendar: create/update/delete events, check schedule, RSVP, reschedule, manage attendees. Supports Google Meet and Zoom. Call this tool for any calendar-related requests.",
       ),
       subAgent("gmail_agent", "Gmail Agent — search, read, send, reply, delete, label emails. Call with the user's full request about email."),
+      ...(bitrixConfigured(env)
+        ? [
+            subAgent(
+              "bitrix_agent",
+              "Bitrix24 Task Agent — the owner's tasks: list, read, analyse (incl. status from comments), add comments, create tasks with people. Cannot close or change tasks.",
+            ),
+          ]
+        : []),
     ],
     maxIterations: 15,
     temperature: 0.2,

@@ -87,6 +87,20 @@ export class Telegram {
     await this.call("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => undefined);
   }
 
+  /** Sends a file (e.g. an Excel report) with an HTML caption. */
+  async sendDocument(chatId: number, filename: string, bytes: Uint8Array, caption = "", mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"): Promise<void> {
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    if (caption) {
+      form.append("caption", caption);
+      form.append("parse_mode", "HTML");
+    }
+    form.append("document", new Blob([new Uint8Array(bytes)], { type: mime }), filename);
+    const res = await fetchWithRetry(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: form });
+    const json = (await res.json().catch(() => null)) as { ok: boolean; description?: string } | null;
+    if (!json?.ok) throw new HttpError("telegram.sendDocument", res.status, json?.description ?? "");
+  }
+
   /** Downloads a file (≤ 20 MB). */
   async download(fileId: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; path: string }> {
     const file = await this.call<TgFile>("getFile", { file_id: fileId });

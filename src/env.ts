@@ -42,6 +42,8 @@ export interface Config {
   ZOOM_ACCOUNT_ID: string;
   ZOOM_CLIENT_ID: string;
   ZOOM_CLIENT_SECRET: string;
+  /** Bitrix24 incoming webhook (https://<portal>/rest/<user>/<code>/) with the Tasks and Users rights; "" = off. */
+  BITRIX_WEBHOOK_URL: string;
   /**
    * Cloud Pub/Sub topic (projects/<project>/topics/<name>) for instant new-mail notifications; "" disables the
    * push and Gmail actions still work on demand (e.g. "перевір пошту").
@@ -128,6 +130,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     ZOOM_ACCOUNT_ID: val("ZOOM_ACCOUNT_ID"),
     ZOOM_CLIENT_ID: val("ZOOM_CLIENT_ID"),
     ZOOM_CLIENT_SECRET: val("ZOOM_CLIENT_SECRET"),
+    BITRIX_WEBHOOK_URL: bitrixUrl(val("BITRIX_WEBHOOK_URL")),
     GMAIL_PUBSUB_TOPIC: val("GMAIL_PUBSUB_TOPIC"),
     OWNER_NAME: val("OWNER_NAME"),
     OWNER_POSITION: val("OWNER_POSITION"),
@@ -179,6 +182,19 @@ export function isOwner(env: Config, tgId: number | undefined): boolean {
 
 export function googleConfigured(env: Config): boolean {
   return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+}
+
+/** The webhook base with one trailing slash; a pasted method URL (…/profile.json) is cut back to the base. */
+export function bitrixUrl(value: string): string {
+  const v = value.trim();
+  if (!v) return "";
+  const m = /^(https:\/\/[^/]+\/rest\/\d+\/[^/]+)\/?/.exec(v);
+  if (!m) throw new ConfigError("BITRIX_WEBHOOK_URL must look like https://<portal>/rest/<user>/<code>/ (Bitrix24 → Developer resources → Other → Incoming webhook)");
+  return `${m[1]}/`;
+}
+
+export function bitrixConfigured(env: Config): boolean {
+  return !!env.BITRIX_WEBHOOK_URL;
 }
 
 export function zoomConfigured(env: Config): boolean {
