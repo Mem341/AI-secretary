@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dailyCron, gcalPush } from "../src/app";
 import type { GEvent } from "../src/google/calendar";
-import { channelToken, eventToChange, invitationButtons, invitationNotice, markUpcoming, reportChange, startWatch, syncRecent } from "../src/google/sync";
+import {
+  channelToken,
+  eventToChange,
+  invitationButtons,
+  invitationNotice,
+  markUpcoming,
+  reportChange,
+  rsvpSnapshot,
+  startWatch,
+  syncRecent,
+} from "../src/google/sync";
 import { readHidden } from "../src/telegram/hidden";
 import { type Call, connectGoogle, lastBotMessage, mockFetch, resetInstance, testEnv, tgCalls } from "./helpers";
 
@@ -84,7 +94,7 @@ describe("instant notices, remembered by Google itself", () => {
         ],
       ],
     });
-    expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon) } }]);
+    expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon), aisRsvp: "" } }]);
   });
 
   it("an event the owner organizes is not announced (n8n: organizer.self)", async () => {
@@ -127,7 +137,7 @@ describe("instant notices, remembered by Google itself", () => {
     expect(text).toContain("Подію перенесено");
     expect(text).toContain("Було:");
     expect(text).toContain("Стало:");
-    expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon + 86400_000), other: "x" } }]);
+    expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon + 86400_000), other: "x", aisRsvp: "" } }]);
   });
 
   it("an old event seen for the first time is only remembered, not announced", async () => {
@@ -322,5 +332,71 @@ describe("invitation notice (n8n «Формат: нова зустріч»)", ()
     expect(text).toContain("(30 хв)");
     expect(text).not.toContain("Опис");
     expect(invitationButtons("a".repeat(60))).toBeUndefined();
+  });
+});
+
+describe("guests' answers to the owner's meetings", () => {
+  const now = Date.now();
+  const soon = now + 2 * 86400_000;
+  const meeting = (anna: string, petro: string, props: Record<string, string>) =>
+    timed("m1", iso(soon), iso(soon + HOUR), {
+      summary: "Бюджет",
+      updated: iso(now),
+      organizer: { self: true, email: "me@acme.ua" },
+      attendees: [
+        { email: "me@acme.ua", self: true, organizer: true, responseStatus: "accepted" },
+        { email: "anna@partner.ua", displayName: "Анна", responseStatus: anna as never },
+        { email: "petro@partner.ua", responseStatus: petro as never },
+      ],
+      extendedProperties: { private: { aisStart: String(soon), ...props } },
+    });
+
+  it("reports who accepted or declined a meeting the bot created, once, and remembers the answers", async () => {
+    await connectGoogle();
+    const writes: { id: string; props: Record<string, string> }[] = [];
+    const calls = mockFetch([propWrites(writes)]);
+    const { env } = testEnv();
+    const ev = meeting("accepted", "declined", { aiSecretaryDraft: "d1" });
+    expect(await reportChange(env, ev, now)).toBe(true);
+    const text = sentTexts(calls)[0]!;
+    expect(text).toContain("👥 <b>Відповідь на запрошення</b>");
+    expect(text).toContain("📌 <b>Бюджет</b>");
+    expect(text).toContain("✅ Анна — буде");
+    expect(text).toContain("❌ petro@partner.ua — не буде");
+    expect(text).toContain("Усього: ✅ 1 · ❌ 1 · ❓ 0 · ⏳ 0");
+    expect(readHidden(lastBotMessage("Відповідь на запрошення"))).toEqual({ k: "ev", id: "m1" });
+    expect(writes[0]!.props.aisRsvp).toBe(rsvpSnapshot(ev));
+
+    // Google pushes again after the bot's own silent write: nothing new to say.
+    resetInstance();
+    await connectGoogle();
+    const again = mockFetch([propWrites(writes)]);
+    const seen = meeting("accepted", "declined", { aiSecretaryDraft: "d1", aisRsvp: writes[0]!.props.aisRsvp! });
+    expect(await reportChange(env, seen, now)).toBe(false);
+    expect(sentTexts(again)).toEqual([]);
+  });
+
+  it("only the answer that changed is listed", async () => {
+    await connectGoogle();
+    const writes: { id: string; props: Record<string, string> }[] = [];
+    const calls = mockFetch([propWrites(writes)]);
+    const { env } = testEnv();
+    const before = rsvpSnapshot(meeting("accepted", "needsAction", {}));
+    expect(await reportChange(env, meeting("accepted", "tentative", { aisRsvp: before }), now)).toBe(true);
+    const text = sentTexts(calls)[0]!;
+    expect(text).toContain("❓ petro@partner.ua — можливо");
+    expect(text).not.toContain("Анна");
+  });
+
+  it("stays silent for other people's meetings and, the first time, for older events without remembered answers", async () => {
+    await connectGoogle();
+    const writes: { id: string; props: Record<string, string> }[] = [];
+    const calls = mockFetch([propWrites(writes)]);
+    const { env } = testEnv();
+    const foreign = { ...meeting("accepted", "declined", {}), id: "m2", organizer: { email: "boss@partner.ua" } };
+    expect(await reportChange(env, foreign, now)).toBe(false);
+    expect(await reportChange(env, meeting("accepted", "declined", {}), now)).toBe(false);
+    expect(sentTexts(calls)).toEqual([]);
+    expect(writes.map((w) => w.props.aisRsvp)).toEqual([rsvpSnapshot(meeting("accepted", "declined", {}))]);
   });
 });

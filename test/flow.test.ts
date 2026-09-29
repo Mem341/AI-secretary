@@ -121,7 +121,7 @@ describe("Google connection lives in one pinned message", () => {
     expect(tgCalls(calls, "pinChatMessage")).toHaveLength(1);
     expect(String(tg.pinned!.text)).toContain("boss@acme.ua");
     // The refresh token itself never appears in the chat text, only encrypted inside the hidden link.
-    expect(tg.pinned!.text).not.toContain("r1");
+    expect(tg.pinned!.text!.replace(/<a href="[^"]*">/, "")).not.toContain("r1");
     expect(jobs.map((j) => j.body)).toEqual([{ type: "connected", gmail: true }]);
 
     resetGoogleCache();
