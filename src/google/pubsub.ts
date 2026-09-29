@@ -27,7 +27,9 @@ async function call(env: Env, method: string, path: string, body?: unknown): Pro
 
 async function ok(res: Response, allow: number[] = []): Promise<Record<string, unknown>> {
   if (res.ok || allow.includes(res.status)) return ((await res.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
-  throw new HttpError("pubsub", res.status, await res.text());
+  const text = await res.text();
+  // Google's HTML error pages say nothing useful: keep the status and the address.
+  throw new HttpError("pubsub", res.status, text.trimStart().startsWith("<") ? `${new URL(res.url || API).pathname}` : text);
 }
 
 export async function ensureGmailPush(env: Env): Promise<PushSetup> {
@@ -39,7 +41,8 @@ export async function ensureGmailPush(env: Env): Promise<PushSetup> {
   const subscription = topic.replace("/topics/", "/subscriptions/") + "-push";
   try {
     await ok(await call(env, "PUT", topic, {}), [409]);
-    const policy = await ok(await call(env, "POST", `${topic}:getIamPolicy`, {}));
+    // Pub/Sub reads a policy with GET (a POST there is a 404).
+    const policy = await ok(await call(env, "GET", `${topic}:getIamPolicy`));
     const bindings = (policy.bindings as { role: string; members: string[] }[] | undefined) ?? [];
     const publisher = bindings.find((b) => b.role === "roles/pubsub.publisher");
     if (!publisher?.members.includes(GMAIL_PUBLISHER)) {
