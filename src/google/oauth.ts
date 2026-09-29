@@ -185,6 +185,29 @@ export async function completeAuth(env: Env, code: string): Promise<{ email: str
   return { email, scope };
 }
 
+/**
+ * Desktop app flow: after consent Google sends the browser to the loopback address, and the owner pastes that
+ * address (or just the code) into the chat. Returns null when the text is not such an answer.
+ */
+export function parseGoogleAnswer(text: string): { code: string | null; state: string | null; error: string | null } | null {
+  const t = text.trim();
+  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])[:/?]/i.test(t)) {
+    let url: URL;
+    try {
+      url = new URL(t);
+    } catch {
+      return null;
+    }
+    const code = url.searchParams.get("code");
+    const error = url.searchParams.get("error");
+    if (!code && !error) return null;
+    return { code, state: url.searchParams.get("state"), error };
+  }
+  // A bare authorization code (Google's codes start with "4/").
+  if (/^4\/[0-9A-Za-z_-]{20,}$/.test(t)) return { code: t, state: null, error: null };
+  return null;
+}
+
 /** Returns a valid access token, refreshing it when it expires within a minute (kept in this instance only). */
 export async function getAccessToken(env: Env, forceRefresh = false): Promise<string> {
   if (!forceRefresh && accessCache && accessCache.expiresAt > Date.now() + 60_000) return accessCache.token;

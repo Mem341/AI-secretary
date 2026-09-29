@@ -1,147 +1,109 @@
 ---
 name: deploy-vercel
-description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Collect exactly four inputs from the user (Telegram bot token, their Telegram ID, OpenRouter key, Google OAuth client ID + secret), validate them, create the project, set env vars, deploy, add the Google redirect URI, finish on /api/setup. No database is involved. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
+description: Deploy a personal copy of the open-source AI-secretary Telegram bot to the user's own Vercel account. Ask only for four things (Telegram bot token, their Telegram ID, OpenRouter key, the JSON file of a Google "Desktop app" OAuth client), validate them, set env vars, deploy, finish on /api/setup, report «Реализовано / Не реализовано». No database, no redirect URI. Use when the user asks to deploy, redeploy, set up or configure the bot on Vercel.
 ---
 
 # Deploy AI-secretary to Vercel
 
-AI-secretary is open source. Anyone can run their own copy on their own Vercel account. Each copy answers exactly
-**one** Telegram user, the person deploying it (`OWNER_TELEGRAM_ID`); everyone else is ignored.
-
-Your job is to take the user from nothing to a working bot. They must be able to create a meeting in their
-Google Calendar from Telegram. Ask only for what they alone can provide; do everything else yourself.
+Each copy answers exactly **one** Telegram user, the person deploying it (`OWNER_TELEGRAM_ID`).
+Your job: take the user from nothing to a working bot. Ask only for what they alone can provide; do everything
+else yourself.
 
 ## Rules of conduct
 
-- **`AGENTS.md` in the repo root is binding.** The project is finished: never port it, never propose services,
-  databases or frameworks, never ask technical questions or for plan approval. Ask only for the values in Step 1
-  and report in the "Реализовано / Не реализовано" format from `AGENTS.md`.
-- **A copy with `wrangler.jsonc`, D1 or SQL migrations is outdated:** use `main` of
-  github.com/Mem341/AI-secretary.
+- **`AGENTS.md` in the repo root is binding.** The project is finished and runs on Vercel as it is. Never port it
+  or propose services, databases or frameworks. Never ask technical questions or for plan approval.
+- **A copy with `wrangler.jsonc`, D1 or SQL migrations is outdated.** Use `main` of github.com/Mem341/AI-secretary.
+- **Talk in the user's language.**
+- **Ask only for the four items of Step 1, in one message.** Do not ask about:
+  - Zoom, Gmail push, the model, a domain, `CRON_SECRET` / `ENCRYPTION_KEY`, profile or default variables;
+  - a database (there is none);
+  - a redirect URI (a Desktop app client has none).
 
-- **Talk in the user's language.** Russian or Ukrainian if they write that way.
-- **Ask for exactly the four items in Step 1, in one message.** Do not ask about anything else:
-  - not Zoom, Gmail push, Pub/Sub, the model, a domain, `CRON_SECRET` or `ENCRYPTION_KEY`;
-  - not a database: the bot has none (see "No database" below);
-  - not the repository (use the public `github.com/Mem341/AI-secretary` unless they mention a fork).
-
-  Optional extras are mentioned once, in the final report.
-- **Voice needs nothing:** OpenRouter transcribes voice messages with the same key.
-- **Zoom is optional:** if the user offers Zoom credentials (Account ID, Client ID, Client Secret of a
-  Server-to-Server OAuth app), set `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID` and `ZOOM_CLIENT_SECRET`; otherwise skip it.
-  Google Meet works without it.
-- **If the user lacks an item,** send the steps for that item from `docs/what-you-need.md` (§1–§4). Translate
-  them if needed and keep the links. Do not send the steps for items they already have.
-- **Validate every value (Step 2) before using it.** A wrong value found now saves a broken deploy.
+  Set optional variables only if the user gives them on their own.
+- **If the user lacks an item,** send the steps for that item only, from `docs/what-you-need.md` §1–§4. Keep the
+  links.
 - **Secrets:**
-  - never repeat them back, never write them into repository files, never commit them;
-  - refer to them as "токен бота", "ключ OpenRouter" and so on;
-  - keep them in shell variables only for the commands that need them.
-- Prefer the Vercel MCP tools when connected. Otherwise use the Vercel CLI (`npx vercel`). When neither can do a
-  step, give the user exact dashboard clicks.
-
-## No database
-
-The bot keeps nothing on a server. Its only persistent item, the Google grant, sits encrypted in one pinned message
-of the owner's chat with the bot. Cards and replies carry their own data inside the Telegram messages, and the
-calendar is read live from Google. So there is **no Neon, no Postgres, no `DATABASE_URL`**: do not create or ask
-for one. If an old deployment still has `DATABASE_URL`, it is simply ignored.
+  - never repeat them back;
+  - never write them into repository files or commit them;
+  - keep them in shell variables only.
+- **Tools:** prefer the Vercel MCP tools; otherwise use the Vercel CLI (`npx vercel`).
 
 ## Step 1 — collect the inputs
 
-Send this (adapted to the user's language) and wait for the answers:
+Send this, adapted to the user's language, and wait for the answers:
 
 > Для запуску бота потрібні 4 речі:
 >
 > 1. **Токен Telegram-бота** — @BotFather → `/newbot` → токен вигляду `7412345678:AAH…`
 > 2. **Ваш Telegram ID** — число від @userinfobot (бот відповідатиме лише вам)
 > 3. **Ключ OpenRouter** — https://openrouter.ai/keys, вигляду `sk-or-v1-…` (на рахунку мають бути кошти)
-> 4. **Google Client ID і Client Secret** — для календаря й пошти. Якщо ще немає, скажіть — дам покрокову
->    інструкцію на 5 хвилин.
->
-> Також: у вас **Google Workspace** (пошта компанії) чи **звичайний Gmail**?
-
-The Workspace/Gmail answer decides the consent-screen type (§4 step 3–4 of `docs/what-you-need.md`).
-
-If the user explicitly wants to deploy **without Google for now**, proceed with items 1–3. In that case:
-- skip Steps 2d and 4;
-- say plainly that meetings will not reach the calendar until the Google keys are added (then redeploy).
+> 4. **JSON-файл Google-клієнта типу «Desktop app»** — `client_secret_….json`. Якщо його ще немає, скажіть: дам
+>    покрокову інструкцію на 5 хвилин.
 
 ## Step 2 — validate (never print the values)
 
-| Item | Format check | Live check |
-|------|--------------|------------|
-| a. Bot token | `^\d{6,}:[A-Za-z0-9_-]{30,}$` | `curl -s https://api.telegram.org/bot$TOKEN/getMe` → `"ok":true`; tell the user the bot's @username |
-| b. Telegram ID | digits only, not a @username, not the bot's own ID (the part of the token before `:`) | — |
-| c. OpenRouter key | starts with `sk-or-` | `curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/key` → HTTP 200; if `limit_remaining` is 0 or the balance is empty, ask them to top up |
-| d. Google client | ID ends with `.apps.googleusercontent.com`; secret usually starts with `GOCSPX-` | Checked for real in Step 5 when the owner connects |
+| Item | Check |
+|------|-------|
+| a. Bot token | Must match `^\d{6,}:[A-Za-z0-9_-]{30,}$`. Then `curl -s https://api.telegram.org/bot$TOKEN/getMe` must return `"ok":true`; remember the bot's @username. |
+| b. Telegram ID | Digits only. It must not be the bot's own ID (the part of the token before `:`). |
+| c. OpenRouter key | Starts with `sk-or-`. `curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/key` must return HTTP 200. |
+| d. Google JSON | Must parse as JSON and contain `installed.client_id` and `installed.client_secret`. |
 
-On a failed check:
-1. Say which item is wrong and why (e.g. "Telegram відповів 401 — токен недійсний").
-2. Ask for that item only.
+About the Google JSON:
+- A `web` key instead of `installed` means a "Web application" client. It also works, but then the owner must add
+  `https://<domain>/api/oauth/callback` to that client. Prefer asking for a Desktop app JSON (§4).
+- A JSON with a `type` field is a service account, not an OAuth client. Ask for the right file.
 
-## Step 3 — project and variables
+If a check fails: say which item is wrong and why, and ask for that item only.
 
-1. **Create the Vercel project** from the repository:
-   - framework preset **Other**, no build command, root `/`;
-   - project name `ai-secretary` unless the user chose one.
+## Step 3 — project, variables, deploy
 
-   If Vercel cannot reach the GitHub repo (`repo_no_access`, another GitHub account), do not ask: deploy from
-   files — clone `main`, `npx vercel link --yes --project ai-secretary`, add the variables, `npx vercel deploy
-   --prod --yes`. No Git connection is needed. Ask only for a Vercel token if the CLI is not logged in.
-2. **Set Production variables:**
+1. **Project.** Framework preset **Other**, no build command, root `/`, name `ai-secretary`.
+   - Vercel cannot reach the GitHub repo (`repo_no_access`)? Do not ask. Clone `main` and deploy from files:
+     `npx vercel link --yes --project ai-secretary`, then the variables, then `npx vercel deploy --prod --yes`.
+   - Ask for a Vercel token only if the CLI is not logged in.
+2. **Production variables:**
    - `TELEGRAM_BOT_TOKEN`
    - `OWNER_TELEGRAM_ID`
    - `OPENROUTER_API_KEY`
-   - `GOOGLE_CLIENT_ID`
-   - `GOOGLE_CLIENT_SECRET`
+   - `GOOGLE_CLIENT_JSON` — the whole JSON file, as one line:
+     `node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' client_secret.json | npx vercel env add GOOGLE_CLIENT_JSON production`
 
-   CLI: `printf '%s' "$VALUE" | npx vercel env add NAME production`.
-
-   Nothing else is needed: the webhook secret and the encryption key are derived from the bot token, and the
-   public URL comes from Vercel.
+   Use `printf '%s' "$VALUE" | npx vercel env add NAME production` for the others. Nothing else is needed.
+   Remove old `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` variables if the project has them.
 3. **Deploy to production.**
+4. **Open `https://<domain>/api/setup`.** The page registers the Telegram webhook by itself. All required rows
+   must be green.
+   - If the page is a Vercel login screen, turn off Deployment Protection for production (Settings →
+     Deployment Protection).
+5. **`curl https://<domain>/api/health`** → `"ok": true` and `"telegram_webhook": true`.
 
-## Step 4 — Google redirect URI
+## Step 4 — the owner connects Google (their action, tell them exactly this)
 
-1. Open `https://<production-domain>/api/setup`. The root URL redirects there.
-   - The page registers the Telegram webhook itself.
-   - Under "Google Calendar і Gmail" it shows the **Redirect URI**, `https://<production-domain>/api/oauth/callback`.
-2. Tell the user to add this exact URI to their OAuth client (it must match exactly, `https`, no trailing slash):
-   Google Cloud Console → [Clients](https://console.cloud.google.com/auth/clients) → their client →
-   **Authorized redirect URIs** → Add URI → Save.
-3. For a **personal Gmail** (External) account, remind them: [Audience](https://console.cloud.google.com/auth/audience)
-   → **Publish app**. Otherwise Google revokes access every 7 days.
+1. Write `/start` to @<bot> and press «Підключити Google».
+2. On the page that opens, press «Увійти через Google», choose the account and tick all permissions.
+3. Google says "app isn't verified" → «Додатково» → «Перейти»: it is their own bot.
+4. The browser opens `http://127.0.0.1…` with an error page. That is expected.
+5. Copy that address from the address bar and send it to the bot.
+6. The bot answers «✅ Google підключено» and pins a «🔐 Google підключено» message. That message must stay pinned.
 
-If the page is a Vercel login screen, production is behind Deployment Protection:
-- turn it off for production (Settings → Deployment Protection);
-- Telegram and Google must be able to reach the app.
+## Step 5 — final report
 
-## Step 5 — owner connects, verify
+Report only in the `AGENTS.md` §4 format:
+- «Реализовано»: ✅ lines;
+- «Не реализовано»: ❌ what — the one action the user must take.
 
-1. The user opens their bot (the @username from Step 2a) and sends `/start`.
-2. There is no questionnaire: they press «Підключити Google».
-3. For a personal Gmail, Google shows "hasn't verified this app": they click **Advanced → Go to AI-secretary**.
-4. They tick all permissions (calendar and mail).
-5. The bot pins a «🔐 Google підключено» message (the encrypted grant; it must stay pinned) and confirms.
-6. Smoke test: «зустріч з тестом завтра о 10:00» → «Створити» → the event appears in Google Calendar.
-7. `curl https://<domain>/api/health` should return `"ok": true`, `"telegram_webhook": true` and, after the owner connects Google, `"google_connected": true`.
-
-## Step 6 — final report to the user
-
-Only in the format from `AGENTS.md` §4: «Реализовано» (✅ lines) and «Не реализовано» (❌ what — the one action the
-user must take). Add the bot's @username and the site URL. No explanations of internals, no alternatives, no
-questions.
+Include the bot's @username and the site URL. No explanations of internals, no alternatives, no questions.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| Google: `redirect_uri_mismatch` | The URI in the Google client differs from the one on /api/setup. Copy it exactly. |
-| Google: `access_denied` / "app not available" | External app still in Testing and the user is not a test user. Publish the app (Audience → Publish app). |
-| «Доступ до Google Calendar втрачено» | Consent screen left in Testing (7-day expiry), access revoked, or the bot token / `ENCRYPTION_KEY` changed. Fix the cause, then reconnect in `/settings`. |
+| /api/setup: "GOOGLE_CLIENT_JSON must be the content…" | The variable holds something other than the downloaded JSON. Set the whole file again. |
+| Google: `access_denied` / "app not available" | External app still in Testing. Fix: Google Auth Platform → Audience → Publish app. |
+| Bot: «Google не прийняв цей код» | The code is single-use and lives a few minutes. Press «Підключити Google» again. |
+| «Доступ до Google втрачено» | Access was revoked, the consent screen is in Testing (7-day expiry), or the bot token / `ENCRYPTION_KEY` changed. Reconnect via `/settings`. |
 | Bot silent | /api/setup → Telegram row. Check that `OWNER_TELEGRAM_ID` is the user's number, not the bot's. |
-| LLM errors in the bot | OpenRouter balance is empty, or the model id in /settings is wrong. |
-| Anything else | Vercel runtime logs (MCP or Dashboard → Logs). The bot also reports errors to its owner; `/errors` lists them. |
-
-To hand the bot to someone else, change `OWNER_TELEGRAM_ID` and redeploy.
+| LLM errors in the bot | OpenRouter balance is empty, or `LLM_MODEL` holds a wrong model id. |
+| Anything else | Vercel runtime logs. The bot also reports errors to its owner in the chat. |

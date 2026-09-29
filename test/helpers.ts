@@ -22,6 +22,7 @@ export const testConfig: Config = {
   TELEGRAM_WEBHOOK_SECRET: "tg-secret",
   GOOGLE_CLIENT_ID: "gid",
   GOOGLE_CLIENT_SECRET: "gsecret",
+  GOOGLE_OAUTH_MODE: "web",
   OPENROUTER_API_KEY: "or-key",
   ENCRYPTION_KEY: "test-encryption-key",
   CRON_SECRET: "cron-secret",

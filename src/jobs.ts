@@ -40,7 +40,20 @@ export type Job =
 
 export const JOB_ATTEMPTS = 3;
 
+/** Jobs the owner is waiting for: the chat shows "печатает…" while they run. */
+const VISIBLE_JOBS = new Set<Job["type"]>(["batch", "parse", "edit", "action", "mail", "voice"]);
+
 export async function runJob(env: Env, job: Job): Promise<void> {
+  if (!VISIBLE_JOBS.has(job.type)) return runJobInner(env, job);
+  const stop = new Telegram(env).keepTyping(env.OWNER_TELEGRAM_ID);
+  try {
+    await runJobInner(env, job);
+  } finally {
+    stop();
+  }
+}
+
+async function runJobInner(env: Env, job: Job): Promise<void> {
   switch (job.type) {
     case "batch":
       return processBatch(env, job.chatId, job.seq);

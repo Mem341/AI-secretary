@@ -82,7 +82,8 @@ describe("/api/setup", () => {
     ]);
     expect(tgCalls(calls, "setMyCommands")).toHaveLength(1);
     expect(html).toContain("@my_secretary_bot");
-    expect(html).toContain("https://bot.test/api/oauth/callback");
+    expect(html).toContain("Desktop app");
+    expect(html).toContain("GOOGLE_CLIENT_JSON");
     expect(html).toContain("Готово 2 з 4");
     expect(html).not.toContain("База даних");
     expect(html).not.toContain("tg-secret");
