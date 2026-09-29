@@ -1,4 +1,3 @@
-import { TUTORIAL_URL } from "../setup";
 import { type Env, gmailPushConfigured, zoomConfigured } from "../env";
 import { gmailPushEndpoint } from "../google/gmailPush";
 import { connectLink, hasGmailScope, hasGoogleAuth, loadOwnerSettings, type OwnerSettings, saveOwnerSettings } from "../google/oauth";
@@ -76,7 +75,6 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   }
   keyboard.push([{ text: google ? "🔄 Перепідключити Google" : "🔗 Підключити Google", url: await connectLink(env) }]);
   if (gmailPushConfigured(env) && gmail) keyboard.push([{ text: "📧 Адреса для сповіщень про листи", callback_data: "set:mailpush" }]);
-  if (available.length) keyboard.push([{ text: "🛠 Як підключити решту", url: TUTORIAL_URL }]);
   return { html, keyboard };
 }
 

@@ -11,7 +11,7 @@ import { isOurChannel } from "./google/sync";
 import { type Job, runWithRetry } from "./jobs";
 import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
-import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList, TUTORIAL_URL } from "./setup";
+import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList } from "./setup";
 import { esc, Telegram } from "./telegram/api";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
@@ -241,40 +241,16 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
 }
 
 /**
- * GET /api/setup — the page whoever deployed this copy opens: registers the Telegram webhook and says, in plain
- * words, whether the bot works and what is left (open the bot, connect Google). How-tos live in the guide
- * (TUTORIAL_URL); machine-readable checks are /api/health. Safe to open repeatedly; reveals no secrets.
+ * GET /api/setup — opened once after a deploy: registers the Telegram webhook and sends the browser straight to
+ * the bot. No status page: everything else happens in the bot. Checks for tools and deploy agents: /api/health.
  */
 export async function setupPage(_req: Request, env: Env): Promise<Response> {
-  const steps: SetupStep[] = [];
-
-  let botUsername: string | null = null;
   try {
-    botUsername = (await ensureTelegramWebhook(env)).username;
-    steps.push({ status: "ok", title: "Бот працює", details: `<a href="https://t.me/${esc(botUsername)}">@${esc(botUsername)}</a> готовий приймати ваші повідомлення.` });
+    const { username } = await ensureTelegramWebhook(env);
+    return new Response(null, { status: 302, headers: { location: `https://t.me/${username}?start=setup`, "cache-control": "no-store" } });
   } catch {
-    steps.push({ status: "error", title: "Бот не відповідає", details: "Telegram не прийняв токен бота. Перевірте токен і перерозгорніть проєкт." });
+    return messagePage("⚠️", "Бот не відповідає", "Telegram не прийняв токен бота. Перевірте токен і перерозгорніть проєкт.", 502);
   }
-
-  const started = await ownerStarted(env);
-  const connected = started && (await hasGoogleAuth(env).catch(() => false));
-  if (!googleConfigured(env)) {
-    steps.push({ status: "todo", title: "Google ще не налаштовано", details: "Щоб бот бачив календар і пошту, додайте Google-клієнт — покроково в інструкції." });
-  } else if (connected) {
-    steps.push({ status: "ok", title: "Google підключено", details: "Календар і пошта на звʼязку." });
-  } else {
-    steps.push({
-      status: "todo",
-      title: started ? "Підключіть Google" : "Відкрийте бота",
-      details: started ? "У боті натисніть «Підключити Google»." : "Напишіть боту /start — він привітається й запропонує підключити Google.",
-    });
-  }
-
-  const buttons = [
-    botUsername ? `<a class="button" href="https://t.me/${esc(botUsername)}?start=setup">Відкрити бота</a>` : "",
-    `<a class="button secondary" href="${TUTORIAL_URL}">📘 Інструкція</a>`,
-  ].join(" ");
-  return renderSetupPage(steps, buttons);
 }
 
 /** The setup page when the deployment cannot start yet: which variables are missing or wrong. */

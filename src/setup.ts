@@ -1,8 +1,5 @@
 import { esc } from "./telegram/api";
 
-/** The owner's guide: connecting Google, Zoom, new-mail notifications and reminders. */
-export const TUTORIAL_URL = "https://github.com/Mem341/AI-secretary/blob/main/docs/tutorial.md";
-
 /** One row of the setup checklist. */
 export interface SetupStep {
   status: "ok" | "todo" | "optional" | "error";
