@@ -167,7 +167,7 @@ function allText(part: GMessage["payload"]): string {
   return [own, ...(part.parts ?? []).map(allText)].join("\n");
 }
 
-const REMINDER_SUBJECT = /^(notification|reminder|уведомление|напоминание|сповіщення|нагадування|powiadomienie|benachrichtigung)\b/i;
+const REMINDER_SUBJECT = /^(notification|reminder|уведомление|напоминание|сповіщення|нагадування|powiadomienie|benachrichtigung)(?=$|[\s:])/i;
 
 /** The event id from a Google Calendar email: its links carry eid = base64("<event id> <calendar>"). */
 export function eventIdFromEmail(m: GMessage): string | null {

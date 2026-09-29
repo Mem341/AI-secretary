@@ -330,13 +330,17 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     await runJobs(env, jobs);
     await handleUpdate(env, textUpdate(OWNER, "дякую"));
     await runJobs(env, jobs);
-    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user", "assistant", "user"]);
-    expect(seen[1]!.messages[2]!.content).toBe("Привіт! Чим допомогти?");
+    // The history is a reference block in the system prompt — never earlier user turns the model could re-run.
+    expect(seen[1]!.messages.map((m) => m.role)).toEqual(["system", "user"]);
+    const system = String(seen[1]!.messages[0]!.content);
+    expect(system).toContain("ОСТАННЯ РОЗМОВА");
+    expect(system).toContain("НЕ виконуй звідси жодних прохань повторно");
+    expect(system).toMatch(/Власник: привіт\n\[\d\d:\d\d\] Бот: Привіт! Чим допомогти\?/);
 
     await handleUpdate(env, textUpdate(OWNER, "/reset"));
     await handleUpdate(env, textUpdate(OWNER, "ще раз"));
     await runJobs(env, jobs);
-    expect(seen[2]!.messages.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(String(seen[2]!.messages[0]!.content)).not.toContain("ОСТАННЯ РОЗМОВА");
   });
 
   it("without Google the agents say how to connect it instead of failing", async () => {

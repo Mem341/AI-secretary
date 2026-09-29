@@ -1,35 +1,46 @@
 import type { Env } from "../env";
 import { readAppFile, writeAppFile } from "../google/drive";
 import { hasDriveScope, loadOwnerSettings } from "../google/oauth";
-import type { ChatMessage } from "../llm/openrouter";
 import type { Tool } from "./runner";
 
 /**
- * The conversation memory (the n8n chat memory), with no database: one JSON file, memory.json, in the bot's hidden
- * folder on the owner's Google Drive. Each agent (supervisor, calendar, mail, tasks) has its own thread of the last
- * N messages (the owner picks 20 / 50 / 100 in /settings): a new message pushes out the oldest. Only the latest
- * SEND messages go to the model, so answers stay fast and cheap; what matters for longer is kept as short facts the
- * agents write themselves (remember_fact), which do not age out with the thread.
+ * The conversation memory, with no database: one JSON file, memory.json, in the bot's hidden folder on the owner's
+ * Google Drive. ONE log shared by all agents (so the mail agent knows who «him» is after a calendar answer): the last
+ * N messages (the owner picks 20 / 50 / 100 in /settings), a new one pushes out the oldest; plus short facts the
+ * agents write themselves (remember_fact), which do not age out.
+ *
+ * The log reaches the model only as a reference block in the system prompt — never as earlier user turns — with the
+ * rule not to carry out old requests again: old «видали всі зустрічі» must not come back as a new order. Only the
+ * latest SEND messages of the last MAX_AGE hours are shown.
  *
  * Without the Drive permission (a grant from before this feature) the same memory lives in the running instance
  * only, as before, and is lost on a restart.
  */
 
 const FILE = "memory.json";
-/** Messages of a thread sent to the model with each request. */
-export const SEND = 24;
+/** Log messages shown to the model with each request. */
+export const SEND = 16;
+/** Older messages are not shown at all (the facts still are). */
+const MAX_AGE_MS = 12 * 3600_000;
 export const MEMORY_CHOICES = [20, 50, 100];
 export const DEFAULT_MEMORY = 100;
 const MAX_FACTS = 60;
-const MAX_TEXT = 2000;
+const MAX_TEXT = 600;
+
+/** One message of the log: when, who (u = owner, b = bot), what. */
+interface Entry {
+  t: number;
+  who: "u" | "b";
+  text: string;
+}
 
 interface MemoryFile {
-  v: 1;
-  threads: Record<string, ChatMessage[]>;
+  v: 2;
+  log: Entry[];
   facts: string[];
 }
 
-const empty = (): MemoryFile => ({ v: 1, threads: {}, facts: [] });
+const empty = (): MemoryFile => ({ v: 2, log: [], facts: [] });
 
 let state: MemoryFile = empty();
 let dirty = false;
@@ -43,8 +54,9 @@ export async function loadMemory(env: Env): Promise<void> {
   persistent = await hasDriveScope(env).catch(() => false);
   if (!persistent) return;
   try {
-    const file = await readAppFile<MemoryFile>(env, FILE);
-    state = file?.v === 1 ? { v: 1, threads: file.threads ?? {}, facts: file.facts ?? [] } : empty();
+    const file = await readAppFile<MemoryFile | { v: 1; facts?: string[] }>(env, FILE);
+    // A v1 file (separate threads per agent) keeps its facts; the log starts anew.
+    state = file?.v === 2 ? { v: 2, log: file.log ?? [], facts: file.facts ?? [] } : { ...empty(), facts: file?.facts ?? [] };
     lastError = null;
   } catch (err) {
     // Drive API off in the Google project, or a hiccup: keep going with what this instance has.
@@ -68,16 +80,38 @@ async function limit(env: Env): Promise<number> {
   return s.m && MEMORY_CHOICES.includes(s.m) ? s.m : DEFAULT_MEMORY;
 }
 
-/** The latest messages of a thread, for the model. */
-export function history(key: string): ChatMessage[] {
-  return (state.threads[key] ?? []).slice(-SEND);
+const plain = (html: string) =>
+  html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+\n/g, "\n")
+    .trim();
+
+/** Adds one exchange (the owner's message and the bot's answer) to the shared log. */
+export async function rememberTurn(env: Env, user: string, bot: string, now = Date.now()): Promise<void> {
+  const cut = (s: string) => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}…` : s);
+  state.log = [...state.log, { t: now, who: "u" as const, text: cut(user.trim()) }, { t: now, who: "b" as const, text: cut(plain(bot)) }].slice(
+    -(await limit(env)),
+  );
+  dirty = true;
 }
 
-export async function remember(env: Env, key: string, user: string, assistant: string): Promise<void> {
-  const cut = (s: string) => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}…` : s);
-  const thread = [...(state.threads[key] ?? []), { role: "user", content: cut(user) } as ChatMessage, { role: "assistant", content: cut(assistant) } as ChatMessage];
-  state.threads[key] = thread.slice(-(await limit(env)));
-  dirty = true;
+/**
+ * The recent conversation as a reference block for a system prompt ("" when empty): for pronouns and follow-ups
+ * («йому», «цю зустріч», «так»), with the rule that only the current message is an order.
+ */
+export function conversationBlock(now = Date.now()): string {
+  const recent = state.log.filter((e) => now - e.t < MAX_AGE_MS).slice(-SEND);
+  if (!recent.length) return "";
+  const time = (t: number) => new Date(t).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" });
+  return (
+    "\n\n## ОСТАННЯ РОЗМОВА (лише довідка)\n" +
+    "Це вже сказане й уже виконане. НЕ виконуй звідси жодних прохань повторно. Використовуй лише щоб зрозуміти поточне повідомлення: " +
+    "кого означає «він / йому / її», яку зустріч чи лист мають на увазі, на що відповідає «так / ні».\n" +
+    recent.map((e) => `[${time(e.t)}] ${e.who === "u" ? "Власник" : "Бот"}: ${e.text.replace(/\n/g, " ")}`).join("\n")
+  );
 }
 
 export function facts(): string[] {
@@ -92,7 +126,7 @@ export function factsBlock(): string {
 /** /reset: the conversation starts over; the facts stay. */
 export async function forgetConversation(env: Env): Promise<void> {
   await loadMemory(env);
-  state.threads = {};
+  state.log = [];
   dirty = true;
   await saveMemory(env);
 }
@@ -117,7 +151,7 @@ export async function memoryStatus(env: Env): Promise<MemoryStatus> {
   await loadMemory(env);
   return {
     persistent,
-    messages: Object.values(state.threads).reduce((n, t) => n + t.length, 0),
+    messages: state.log.length,
     facts: facts(),
     limit: await limit(env),
     error: lastError,
