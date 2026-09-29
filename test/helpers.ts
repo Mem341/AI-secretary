@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import { resetMemory } from "../src/agent/memory";
 import { createEnv } from "../src/app";
 import { resetDirectory } from "../src/bot/contacts";
 import { resetOwnerCache, type User } from "../src/bot/owner";
@@ -15,7 +16,8 @@ export const OWNER = 1000;
 export const testConfig: Config = {
   OWNER_TELEGRAM_ID: OWNER,
   PUBLIC_URL: "https://bot.test",
-  LLM_MODEL: "test/card-model",
+  LLM_MODEL: "test/supervisor-model",
+  AGENT_MODEL: "test/agent-model",
   LLM_MODEL_SUMMARY: "test/summary-model",
   STT_MODEL: "test/audio-model",
   REMINDER_MINUTES: 30,
@@ -45,6 +47,7 @@ export function resetInstance(): void {
   resetSession();
   resetDirectory();
   resetOwnerCache();
+  resetMemory();
   tg.reset();
 }
 
@@ -217,6 +220,50 @@ export function tgCalls(calls: Call[], method: string): Record<string, unknown>[
   return calls
     .filter((c) => c.url.includes("api.telegram.org") && c.url.endsWith(`/${method}`))
     .map((c) => c.body as Record<string, unknown>);
+}
+
+/** An OpenRouter answer with plain text (the agent is done). */
+export function llmText(content: string): Response {
+  return Response.json({ choices: [{ message: { content } }] });
+}
+
+/** An OpenRouter answer calling tools: [name, args] pairs. */
+export function llmTools(...calls: [string, Record<string, unknown>][]): Response {
+  return Response.json({
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: calls.map(([name, args], i) => ({ id: `call${i}`, type: "function", function: { name, arguments: JSON.stringify(args) } })),
+        },
+      },
+    ],
+  });
+}
+
+export interface LlmRequest {
+  model: string;
+  messages: { role: string; content: unknown; tool_calls?: unknown; tool_call_id?: string }[];
+  tools?: { function: { name: string } }[];
+}
+
+/**
+ * Route: OpenRouter chat completions answered by `script` (per request, with the parsed body). Returns the list of
+ * requests it saw.
+ */
+export function openRouter(script: (req: LlmRequest, n: number) => Response, seen: LlmRequest[] = []): Route {
+  return (url, init) => {
+    if (url.hostname !== "openrouter.ai") return undefined;
+    const req = JSON.parse(init.bodyText) as LlmRequest;
+    seen.push(req);
+    return script(req, seen.length);
+  };
+}
+
+/** The text of the last message of a request (the latest user turn or tool result). */
+export function lastContent(req: LlmRequest): string {
+  const c = req.messages.at(-1)!.content;
+  return typeof c === "string" ? c : Array.isArray(c) ? String((c[0] as { text?: string }).text ?? "") : "";
 }
 
 export function llmReply(json: unknown): Response {

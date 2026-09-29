@@ -124,12 +124,16 @@ export interface OutgoingMail {
   body: string;
   inReplyTo?: string | null;
   references?: string | null;
+  cc?: string[];
+  bcc?: string[];
 }
 
 /** An RFC 2822 message, base64url-encoded as Gmail's `raw` field expects. */
 export function buildRawMessage(mail: OutgoingMail): string {
   const headers = [
     `To: ${mail.to.join(", ")}`,
+    ...(mail.cc?.length ? [`Cc: ${mail.cc.join(", ")}`] : []),
+    ...(mail.bcc?.length ? [`Bcc: ${mail.bcc.join(", ")}`] : []),
     `Subject: ${encodeHeader(mail.subject)}`,
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
@@ -176,6 +180,11 @@ export class Gmail {
     }
     await expectOk(`gmail ${init.method ?? "GET"} ${path.split("?")[0]}`, res);
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  }
+
+  /** Any Gmail API call under users/me (the agent tools use it for threads, drafts and labels). */
+  call<T>(path: string, init: RequestInit = {}): Promise<T> {
+    return this.request<T>(path, init);
   }
 
   /** Message ids for a Gmail search query (same syntax as the Gmail search box). */

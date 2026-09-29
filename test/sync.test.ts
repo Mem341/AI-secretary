@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dailyCron, gcalPush } from "../src/app";
 import type { GEvent } from "../src/google/calendar";
-import { channelToken, eventToChange, markUpcoming, reportChange, startWatch, syncRecent } from "../src/google/sync";
+import { channelToken, eventToChange, invitationButtons, invitationNotice, markUpcoming, reportChange, startWatch, syncRecent } from "../src/google/sync";
 import { readHidden } from "../src/telegram/hidden";
 import { type Call, connectGoogle, lastBotMessage, mockFetch, resetInstance, testEnv, tgCalls } from "./helpers";
 
@@ -65,16 +65,37 @@ describe("instant notices, remembered by Google itself", () => {
   const now = Date.now();
   const soon = now + 2 * 86400_000;
 
-  it("reports a freshly created event once and remembers its start on the event", async () => {
+  it("reports a fresh invitation once, with ✅ Прийняти / ❌ Відхилити, and remembers its start on the event", async () => {
     await connectGoogle();
     const writes: { id: string; props: Record<string, string> }[] = [];
     const calls = mockFetch([propWrites(writes)]);
     const { env } = testEnv();
-    const ev = timed("e1", iso(soon), iso(soon + HOUR), { created: iso(now - 60_000), updated: iso(now) });
+    const ev = timed("e1", iso(soon), iso(soon + HOUR), { created: iso(now - 60_000), updated: iso(now), organizer: { email: "boss@partner.ua" } });
     expect(await reportChange(env, ev, now)).toBe(true);
-    expect(sentTexts(calls)[0]).toContain("Нова подія в календарі");
-    expect(readHidden(lastBotMessage("Нова подія"))).toEqual({ k: "ev", id: "e1" });
+    expect(await reportChange(env, ev, now)).toBe(false);
+    expect(sentTexts(calls)).toHaveLength(1);
+    expect(sentTexts(calls)[0]).toContain("📅 <b>Запрошення на зустріч</b>");
+    expect(readHidden(lastBotMessage("Запрошення"))).toEqual({ k: "ev", id: "e1" });
+    expect(tgCalls(calls, "sendMessage")[0]!.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: "✅ Прийняти", callback_data: "accept:e1" },
+          { text: "❌ Відхилити", callback_data: "decline:e1" },
+        ],
+      ],
+    });
     expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon) } }]);
+  });
+
+  it("an event the owner organizes is not announced (n8n: organizer.self)", async () => {
+    await connectGoogle();
+    const writes: { id: string; props: Record<string, string> }[] = [];
+    const calls = mockFetch([propWrites(writes)]);
+    const { env } = testEnv();
+    const ev = timed("e3", iso(soon), iso(soon + HOUR), { created: iso(now - 60_000), updated: iso(now), organizer: { self: true } });
+    expect(await reportChange(env, ev, now)).toBe(false);
+    expect(sentTexts(calls)).toEqual([]);
+    expect(writes).toHaveLength(1);
   });
 
   it("stays silent for an RSVP or description change (same start) and for the bot's own events", async () => {
@@ -241,5 +262,65 @@ describe("push channel without stored state", () => {
     const res = await dailyCron(new Request("https://bot.test/api/cron/daily", { headers: { authorization: "Bearer cron-secret" } }), env);
     expect(res.status).toBe(200);
     expect(jobs.map((j) => j.body)).toEqual([{ type: "daily" }]);
+  });
+});
+
+describe("invitation notice (n8n «Формат: нова зустріч»)", () => {
+  it("shows date, weekday, time with duration, organizer, guests' answers, the video link, place and description", () => {
+    const text = invitationNotice({
+      id: "x",
+      summary: "Демо <продукту>",
+      start: { dateTime: "2026-10-01T14:00:00+03:00" },
+      end: { dateTime: "2026-10-01T15:30:00+03:00" },
+      organizer: { email: "boss@partner.ua", displayName: "Бос" },
+      attendees: [
+        { email: "me@acme.ua", self: true, responseStatus: "needsAction" },
+        { email: "anna@partner.ua", displayName: "Анна", responseStatus: "accepted" },
+        { email: "petro@partner.ua", responseStatus: "declined" },
+        { email: "ivan@partner.ua", responseStatus: "tentative" },
+        { email: "olga@partner.ua" },
+      ],
+      conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/abc-defg-hij" }], conferenceSolution: { name: "Google Meet" } },
+      location: "Офіс, 3 поверх",
+      description: "<p>Порядок денний</p>",
+    });
+    expect(text).toBe(
+      [
+        "📅 <b>Запрошення на зустріч</b>",
+        "",
+        "📌 <b>Демо &lt;продукту&gt;</b>",
+        "📆 01.10.2026 (четвер)",
+        "🕐 14:00 — 15:30 (1 год 30 хв)",
+        "",
+        "👤 <b>Організатор:</b> Бос",
+        "",
+        "👥 <b>Учасники (4):</b>",
+        "  ✅ Анна",
+        "  ❌ petro",
+        "  ❓ ivan",
+        "  ⏳ olga",
+        "",
+        '🎥 <b>Google Meet:</b> <a href="https://meet.google.com/abc-defg-hij">Приєднатися</a>',
+        "",
+        "📍 <b>Місце:</b> Офіс, 3 поверх",
+        "",
+        "📝 <b>Опис:</b>",
+        "<i>Порядок денний</i>",
+      ].join("\n"),
+    );
+  });
+
+  it("finds a Zoom link in the description; an id too long for callback_data gets no buttons", () => {
+    const text = invitationNotice({
+      id: "z",
+      summary: "Zoom",
+      start: { dateTime: "2026-10-01T09:00:00+03:00" },
+      end: { dateTime: "2026-10-01T09:30:00+03:00" },
+      description: "Join https://us02web.zoom.us/j/123456?pwd=abc",
+    });
+    expect(text).toContain('🎥 <b>Zoom:</b> <a href="https://us02web.zoom.us/j/123456?pwd=abc">Приєднатися</a>');
+    expect(text).toContain("(30 хв)");
+    expect(text).not.toContain("Опис");
+    expect(invitationButtons("a".repeat(60))).toBeUndefined();
   });
 });

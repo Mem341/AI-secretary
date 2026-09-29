@@ -1,40 +1,33 @@
-import { parseAction } from "./bot/actions";
-import { parseMail } from "./bot/mail";
-import { type CardData, type Draft, editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
-import { helpText, MENU_ROWS } from "./bot/onboarding";
-import { loadOwner } from "./bot/owner";
+import { type AgentInput, handleWithAgents } from "./agent";
+import { helpText } from "./bot/onboarding";
 import { type Env, gmailPushConfigured } from "./env";
 import { gmailSync, startGmailWatch } from "./google/gmailPush";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
 import { sendDigest, sendReminders } from "./google/reminders";
 import { markUpcoming, startWatch, syncRecent } from "./google/sync";
+import { bytesToBase64 } from "./lib/crypto";
 import { logError } from "./lib/errors";
+import type { ContentPart } from "./llm/openrouter";
+import { takeBatch } from "./session";
 import { transcribe } from "./stt/transcribe";
 import { esc, Telegram } from "./telegram/api";
-import type { TgMessage } from "./telegram/types";
 
 /**
- * Background jobs. They run after the HTTP response (Vercel `waitUntil`), with retries.
- * There is no database: a job carries everything it needs.
+ * Background jobs. They run after the HTTP response (Vercel `waitUntil`). There is no database: a job carries
+ * everything it needs.
  */
 export type Job =
-  /** Debounced batch of forwarded messages / screenshots; processed only if `seq` is still the latest. */
+  /** One input for the agents (n8n "AI Agent ALL"); photoIds are Telegram files shown to the model. */
+  | { type: "agent"; input: AgentInput; photoIds: string[] }
+  /** Debounced burst of forwarded messages; processed only if `seq` is still the latest. */
   | { type: "batch"; chatId: number; seq: number }
-  /** Build a card from a request and show it in place of `messageId` (a placeholder), or as a new message. */
-  | { type: "parse"; draft: Draft; messageId: number | null }
-  /** Apply a free-text correction to a card. */
-  | { type: "edit"; data: CardData; instruction: string; messageId: number | null }
-  /** Classify a reply about an existing event (reschedule/cancel/note) and ask for confirmation. */
-  | { type: "action"; eventId: string; text: string }
-  /** Classify a Gmail request: run read-only actions, or ask to confirm sending/removing. */
-  | { type: "mail"; text: string; targetId: string | null }
-  /** Transcribe a voice message, then treat it as text. */
-  | { type: "voice"; chatId: number; fileId: string; messageId: number; replyTo: TgMessage | null }
+  /** Transcribe a voice message (n8n "Whisper STT"), then hand it to the agents. */
+  | { type: "voice"; chatId: number; fileId: string; messageId: number; replyText: string | null; replyRef?: string | null }
   /** Report calendar changes after a Google push. */
   | { type: "sync" }
   /** Right after Google is connected: push channel, remember upcoming events, Gmail watch, greet. */
   | { type: "connected"; gmail: boolean }
-  /** Daily: renew the push channels, remember newly added events (safety net for lost pushes). */
+  /** Daily: morning digest, renew the push channels, remember newly added events. */
   | { type: "daily" }
   /** Report emails that arrived since the last Gmail push. */
   | { type: "gmail_sync" }
@@ -42,43 +35,59 @@ export type Job =
   | { type: "reminders" };
 
 export const JOB_ATTEMPTS = 3;
+/** Agent runs change things (events, mail): never repeated automatically, as in n8n. */
+const ONCE = new Set<Job["type"]>(["agent", "batch", "voice"]);
 
-/** Jobs the owner is waiting for: the chat shows "печатает…" while they run. */
-const VISIBLE_JOBS = new Set<Job["type"]>(["batch", "parse", "edit", "action", "mail", "voice"]);
+const PHOTO_MARK = /^\[\[photo:([^\]]+)\]\]$/;
 
-export async function runJob(env: Env, job: Job): Promise<void> {
-  if (!VISIBLE_JOBS.has(job.type)) return runJobInner(env, job);
-  const stop = new Telegram(env).keepTyping(env.OWNER_TELEGRAM_ID);
+async function images(env: Env, fileIds: string[]): Promise<ContentPart[]> {
+  const tg = new Telegram(env);
+  const out: ContentPart[] = [];
+  for (const id of fileIds) {
+    const { bytes, path } = await tg.download(id);
+    const mime = path.endsWith(".png") ? "image/png" : path.endsWith(".webp") ? "image/webp" : "image/jpeg";
+    out.push({ type: "image_url", image_url: { url: `data:${mime};base64,${bytesToBase64(bytes)}` } });
+  }
+  return out;
+}
+
+/** The chat shows "печатает…" while the agents work (n8n "Send a chat action"). */
+async function withTyping(env: Env, chatId: number, work: () => Promise<void>): Promise<void> {
+  const stop = new Telegram(env).keepTyping(chatId);
   try {
-    await runJobInner(env, job);
+    await work();
   } finally {
     stop();
   }
 }
 
-async function runJobInner(env: Env, job: Job): Promise<void> {
+export async function runJob(env: Env, job: Job): Promise<void> {
   switch (job.type) {
-    case "batch":
-      return processBatch(env, job.chatId, job.seq);
-    case "parse":
-      return parseDraft(env, job.draft, job.messageId);
-    case "edit":
-      return editDraft(env, job.data, job.instruction, job.messageId);
-    case "action":
-      return parseAction(env, job.eventId, job.text);
-    case "mail":
-      return parseMail(env, job.text, job.targetId);
-    case "voice": {
-      const tg = new Telegram(env);
-      const { bytes } = await tg.download(job.fileId);
-      const text = await transcribe(env, bytes);
-      if (!text) {
-        await tg.send(job.chatId, "Не вдалося розібрати голосове. Спробуйте ще раз або напишіть текстом.", { replyTo: job.messageId });
-        return;
-      }
-      await tg.send(job.chatId, `🎙 <i>${esc(text)}</i>`, { replyTo: job.messageId });
-      return handleOwnerText(env, await loadOwner(env), job.chatId, text, "voice", job.replyTo);
+    case "agent":
+      return withTyping(env, job.input.chatId, async () =>
+        handleWithAgents(env, { ...job.input, images: await images(env, job.photoIds) }),
+      );
+    case "batch": {
+      const batch = takeBatch(job.chatId, job.seq);
+      if (!batch) return;
+      const photos = batch.lines.map((l) => PHOTO_MARK.exec(l)?.[1]).filter((x): x is string => !!x);
+      const text = `Переслана переписка:\n${batch.lines.filter((l) => !PHOTO_MARK.test(l)).join("\n")}`;
+      return withTyping(env, job.chatId, async () =>
+        handleWithAgents(env, { chatId: job.chatId, inputType: "forward", text, images: await images(env, photos) }),
+      );
     }
+    case "voice":
+      return withTyping(env, job.chatId, async () => {
+        const tg = new Telegram(env);
+        const { bytes } = await tg.download(job.fileId);
+        const text = await transcribe(env, bytes);
+        if (!text) {
+          await tg.send(job.chatId, "Не вдалося розібрати голосове. Спробуйте ще раз або напишіть текстом.", { replyTo: job.messageId });
+          return;
+        }
+        await tg.send(job.chatId, `🎙 <i>${esc(text)}</i>`, { replyTo: job.messageId });
+        await handleWithAgents(env, { chatId: job.chatId, inputType: "voice", text, replyText: job.replyText, replyRef: job.replyRef });
+      });
     case "sync":
       if (await hasGoogleAuth(env)) await syncRecent(env);
       return;
@@ -89,9 +98,7 @@ async function runJobInner(env: Env, job: Job): Promise<void> {
       if (job.gmail && gmailPushConfigured(env)) {
         await startGmailWatch(env, true).catch((err) => logError(env, "gmail.watch", err));
       }
-      await new Telegram(env).send(env.OWNER_TELEGRAM_ID, `✅ Google підключено. Подій на найближчі 30 днів: ${count}.\n\n${helpText()}`, {
-        menu: MENU_ROWS,
-      });
+      await new Telegram(env).send(env.OWNER_TELEGRAM_ID, `✅ Google підключено. Подій на найближчі 30 днів: ${count}.\n\n${helpText()}`);
       return;
     }
     case "daily":
@@ -123,9 +130,7 @@ async function handleRevoked(env: Env): Promise<void> {
 /** Tells the owner a job finally failed so the request is not lost silently. */
 async function reportJobFailure(env: Env, job: Job): Promise<void> {
   const tg = new Telegram(env);
-  if (job.type === "batch" || job.type === "parse" || job.type === "edit") {
-    await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося підготувати картку. Спробуйте ще раз.").catch(() => undefined);
-  } else if (job.type === "action" || job.type === "mail") {
+  if (job.type === "agent" || job.type === "batch") {
     await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося обробити запит. Спробуйте ще раз.").catch(() => undefined);
   } else if (job.type === "voice") {
     await tg.send(job.chatId, "😔 Не вдалося обробити голосове. Спробуйте ще раз.", { replyTo: job.messageId }).catch(() => undefined);
@@ -151,7 +156,7 @@ export async function runWithRetry(
         await handleRevoked(env).catch((e) => logError(env, "job.revoked", e));
         return;
       }
-      if (attempt < attempts) {
+      if (attempt < (ONCE.has(job.type) ? 1 : attempts)) {
         await sleep(2000 * attempt);
         continue;
       }

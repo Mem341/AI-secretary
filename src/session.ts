@@ -1,4 +1,4 @@
-import type { SourceType } from "./bot/meetings";
+export type SourceType = "text" | "voice" | "forward" | "screenshot";
 
 /**
  * Short-lived, in-memory state of the current server instance — nothing is persisted, everything expires by

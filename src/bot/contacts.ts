@@ -2,7 +2,12 @@ import type { Env } from "../env";
 import { Calendar } from "../google/calendar";
 import { hasGoogleAuth } from "../google/oauth";
 import { DAY } from "../lib/time";
-import type { DirectoryEntry } from "./card";
+
+/** Address-book entry (name → email). */
+export interface DirectoryEntry {
+  name: string;
+  email: string;
+}
 
 let cache: { at: number; list: DirectoryEntry[] } | null = null;
 const TTL_MS = 10 * 60_000;

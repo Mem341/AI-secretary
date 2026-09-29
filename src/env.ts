@@ -12,6 +12,8 @@ export interface Config {
   PUBLIC_URL: string;
   LLM_MODEL: string;
   LLM_MODEL_SUMMARY: string;
+  /** Model of the Calendar and Gmail agents (the n8n sub-workflows). LLM_MODEL runs the supervisor. */
+  AGENT_MODEL: string;
   /** OpenRouter model with audio input that transcribes voice messages. */
   STT_MODEL: string;
   /** Minutes before a meeting for the Telegram reminder (/api/cron/reminders). */
@@ -63,6 +65,7 @@ export interface Env extends Config {
 }
 
 export const DEFAULT_LLM_MODEL = "openai/gpt-6-luna-pro";
+export const DEFAULT_AGENT_MODEL = "x-ai/grok-4.1-fast";
 export const DEFAULT_LLM_MODEL_SUMMARY = "anthropic/claude-sonnet-4.5";
 // OpenAI models on OpenRouter take audio only as wav/mp3; Telegram voice notes are OGG/Opus, which Gemini accepts.
 export const DEFAULT_STT_MODEL = "google/gemini-2.5-flash";
@@ -102,6 +105,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     LLM_MODEL: val("LLM_MODEL") || DEFAULT_LLM_MODEL,
     LLM_MODEL_SUMMARY: val("LLM_MODEL_SUMMARY") || DEFAULT_LLM_MODEL_SUMMARY,
     STT_MODEL: val("STT_MODEL") || DEFAULT_STT_MODEL,
+    AGENT_MODEL: val("AGENT_MODEL") || DEFAULT_AGENT_MODEL,
     REMINDER_MINUTES: Number.isFinite(Number(val("REMINDER_MINUTES"))) && Number(val("REMINDER_MINUTES")) > 0 ? Math.round(Number(val("REMINDER_MINUTES"))) : 30,
     TELEGRAM_BOT_TOKEN: botToken,
     OPENROUTER_API_KEY: val("OPENROUTER_API_KEY"),

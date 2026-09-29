@@ -9,6 +9,7 @@ export interface GAttendee {
   displayName?: string;
   self?: boolean;
   organizer?: boolean;
+  resource?: boolean;
   responseStatus?: "needsAction" | "declined" | "tentative" | "accepted";
 }
 
@@ -27,8 +28,8 @@ export interface GEvent {
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
   attendees?: GAttendee[];
-  organizer?: { email?: string; self?: boolean };
-  conferenceData?: { entryPoints?: { entryPointType: string; uri: string }[] };
+  organizer?: { email?: string; displayName?: string; self?: boolean };
+  conferenceData?: { entryPoints?: { entryPointType: string; uri: string }[]; conferenceSolution?: { name?: string } };
   eventType?: string;
 }
 
@@ -96,6 +97,15 @@ export class Calendar {
   /** Deletes the event and notifies attendees. */
   async deleteEvent(eventId: string): Promise<void> {
     await this.request<void>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, { method: "DELETE" });
+  }
+
+  /** Busy intervals of the primary calendar in [timeMin, timeMax]. */
+  async freeBusy(timeMin: string, timeMax: string): Promise<{ start: string; end: string }[]> {
+    const res = await this.request<{ calendars?: Record<string, { busy?: { start: string; end: string }[] }> }>("/freeBusy", {
+      method: "POST",
+      body: JSON.stringify({ timeMin, timeMax, timeZone: "Europe/Kyiv", items: [{ id: "primary" }] }),
+    });
+    return res.calendars?.primary?.busy ?? [];
   }
 
   listEvents(params: Record<string, string>): Promise<GEventList> {

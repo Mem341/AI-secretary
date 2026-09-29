@@ -63,3 +63,57 @@ export async function chatJson(env: Env, model: string, messages: ChatMessage[])
   }
   throw lastErr;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tool calling (OpenAI-compatible, through OpenRouter) — the n8n "AI Agent" nodes.
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export type AgentMessage =
+  | ChatMessage
+  | { role: "assistant"; content: string | null; tool_calls: ToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema of the arguments. */
+  parameters: Record<string, unknown>;
+}
+
+/** One model turn: either a final text or tool calls to run. */
+export async function chatWithTools(
+  env: Env,
+  model: string,
+  messages: AgentMessage[],
+  tools: ToolSpec[],
+  temperature?: number,
+): Promise<{ content: string; toolCalls: ToolCall[] }> {
+  const res = await fetchWithRetry("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      "content-type": "application/json",
+      "HTTP-Referer": env.PUBLIC_URL,
+      "X-Title": "AI-secretary",
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      ...(tools.length ? { tools: tools.map((t) => ({ type: "function", function: t })) } : {}),
+      ...(temperature === undefined ? {} : { temperature }),
+    }),
+  });
+  await expectOk("openrouter", res);
+  const data = (await res.json()) as {
+    choices?: { message?: { content?: string | null; tool_calls?: ToolCall[] } }[];
+    error?: { message: string };
+  };
+  if (data.error) throw new Error(`openrouter: ${data.error.message}`);
+  const message = data.choices?.[0]?.message;
+  return { content: message?.content ?? "", toolCalls: message?.tool_calls ?? [] };
+}

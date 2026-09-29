@@ -1,21 +1,23 @@
-import { handleActionCallback } from "../bot/actions";
-import { loadDirectory } from "../bot/contacts";
-import { handleMailCallback, handleMailQuickAction, startMailDraft } from "../bot/mail";
-import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE_S, PHOTO_DEBOUNCE_S, photoLine } from "../bot/meetings";
-import { helpText, MENU_ROWS, menuCommand, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
-import { showAgenda, showFreeSlots } from "../bot/agenda";
+import { forget } from "../agent/memory";
+import { helpText, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { connectWithCode } from "../google/connect";
 import { connectLink, hasGoogleAuth, parseGoogleAnswer, verifyState } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
-import { clearAnswer, expectAnswer } from "../session";
-import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
+import type { MailRef } from "../google/gmailPush";
+import type { EventRef } from "../google/sync";
+import { appendBatch } from "../session";
+import { Telegram, TG_DOWNLOAD_LIMIT } from "./api";
+import { readHidden } from "./hidden";
 import type { TgCallbackQuery, TgMessage, TgMessageOrigin, TgUpdate, TgUser } from "./types";
 
+/** A burst of forwarded messages is handled as one conversation after this quiet period. */
+export const FORWARD_DEBOUNCE_S = 8;
+
 /**
- * The bot serves exactly one person: OWNER_TELEGRAM_ID. Messages and button presses from anyone else are
- * ignored without a reply, so strangers learn nothing about the bot.
+ * The n8n "Telegram Trigger → Switch — Input Type → Normalize Input" part. The bot serves exactly one person:
+ * OWNER_TELEGRAM_ID; messages and button presses from anyone else are ignored without a reply.
  */
 async function authorize(env: Env, from: TgUser): Promise<User | null> {
   if (from.is_bot || !isOwner(env, from.id)) return null;
@@ -34,9 +36,7 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
   }
 
   const text = msg.text?.trim() ?? "";
-  if (text.startsWith("/")) return handleCommand(env, user, msg, text);
-  const button = menuCommand(text);
-  if (button) return handleCommand(env, user, msg, button);
+  if (text.startsWith("/") && (await handleCommand(env, user, text))) return;
   await handleOwnerMessage(env, user, msg);
 }
 
@@ -55,7 +55,7 @@ function originName(origin: TgMessageOrigin, owner: User): string {
   }
 }
 
-/** "[28.09.2026 14:02] Іван Петренко: текст" — one line of a forwarded conversation for the LLM. */
+/** "[28.09.2026 14:02] Іван Петренко: текст" — one line of a forwarded conversation. */
 export function forwardedLine(msg: TgMessage, owner: User): string {
   const origin = msg.forward_origin!;
   const at = new Date(origin.date * 1000);
@@ -64,133 +64,104 @@ export function forwardedLine(msg: TgMessage, owner: User): string {
   return `[${d}.${m}.${y} ${formatTime(at)}] ${originName(origin, owner)}: ${body || "(вкладення)"}`;
 }
 
+const replyTextOf = (msg: TgMessage): string | null => msg.reply_to_message?.text ?? msg.reply_to_message?.caption ?? null;
+
+/** The event or email a bot message is about (hidden in it), so the agent does not have to guess by its title. */
+export function refOf(msg: TgMessage | undefined | null): string | null {
+  const ref = readHidden<EventRef | MailRef>(msg);
+  if (ref?.k === "ev") return `eventId: ${ref.id}`;
+  if (ref?.k === "mail") return `messageId: ${ref.id}`;
+  return null;
+}
+
 async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise<void> {
   const tg = new Telegram(env);
-  const photo = msg.photo?.at(-1) ?? (msg.document?.mime_type?.startsWith("image/") ? msg.document : undefined);
+  const chatId = msg.chat.id;
+  const image = msg.photo?.at(-1) ?? (msg.document?.mime_type?.startsWith("image/") ? msg.document : undefined);
 
   if (msg.forward_origin) {
-    const lines = [forwardedLine(msg, user)];
-    if (photo) lines.push(photoLine(photo.file_id));
-    await handleBatchInput(env, user, msg.chat.id, lines.join("\n"), "forward", FORWARD_DEBOUNCE_S);
-    return;
-  }
-
-  if (photo) {
-    if ((photo.file_size ?? 0) > TG_DOWNLOAD_LIMIT) {
-      await tg.send(msg.chat.id, "Зображення завелике (понад 20 МБ).");
-      return;
-    }
-    const lines = [photoLine(photo.file_id)];
-    if (msg.caption) lines.unshift(`Підпис: ${msg.caption}`);
-    await handleBatchInput(env, user, msg.chat.id, lines.join("\n"), "screenshot", PHOTO_DEBOUNCE_S);
+    await tg.typing(chatId);
+    const batch = appendBatch(chatId, forwardedLine(msg, user), "forward");
+    if (image) batch.lines.push(`[[photo:${image.file_id}]]`);
+    await env.jobs.send({ type: "batch", chatId, seq: batch.seq }, { delaySeconds: FORWARD_DEBOUNCE_S });
     return;
   }
 
   if (msg.voice) {
     if ((msg.voice.file_size ?? 0) > TG_DOWNLOAD_LIMIT) {
-      await tg.send(msg.chat.id, "Голосове завелике (понад 20 МБ).");
+      await tg.send(chatId, "Голосове завелике (понад 20 МБ).");
       return;
     }
-    await tg.typing(msg.chat.id);
+    await env.jobs.send({ type: "voice", chatId, fileId: msg.voice.file_id, messageId: msg.message_id, replyText: replyTextOf(msg), replyRef: refOf(msg.reply_to_message) });
+    return;
+  }
+
+  if (image || msg.document) {
+    if ((image?.file_size ?? msg.document?.file_size ?? 0) > TG_DOWNLOAD_LIMIT) {
+      await tg.send(chatId, "Файл завеликий (понад 20 МБ).");
+      return;
+    }
+    // n8n: a photo goes in as its caption or "[фото]", a document as "[документ: name]"; images are shown to the model.
+    const text = msg.caption || (msg.photo ? "[фото]" : `[документ: ${msg.document?.file_name ?? ""}]`);
     await env.jobs.send({
-      type: "voice",
-      chatId: msg.chat.id,
-      fileId: msg.voice.file_id,
-      messageId: msg.message_id,
-      replyTo: msg.reply_to_message ?? null,
+      type: "agent",
+      input: { chatId, inputType: msg.photo ? "photo" : "document", text, replyText: replyTextOf(msg), replyRef: refOf(msg.reply_to_message) },
+      photoIds: image ? [image.file_id] : [],
     });
     return;
   }
 
-  if (msg.audio || msg.document) {
-    await tg.send(msg.chat.id, "Обробка записів зустрічей зʼявиться на етапі «Протокол». Поки що я приймаю текст, голосові, переслану переписку та скріншоти.");
-    return;
-  }
-
   const text = msg.text?.trim();
-  if (text && (await handleGoogleAnswer(env, msg, text))) return;
-  if (text) await handleOwnerText(env, user, msg.chat.id, text, "text", msg.reply_to_message ?? null);
+  if (!text) return;
+  if (await handleGoogleAnswer(env, msg, text)) return;
+  await env.jobs.send({ type: "agent", input: { chatId, inputType: "text", text, replyText: replyTextOf(msg), replyRef: refOf(msg.reply_to_message) }, photoIds: [] });
 }
 
-async function handleCommand(env: Env, user: User, msg: TgMessage, text: string): Promise<void> {
+/** Service commands; everything else, including an unknown "/…", goes to the agents. Returns true when handled. */
+async function handleCommand(env: Env, user: User, text: string): Promise<boolean> {
   const tg = new Telegram(env);
-  const [rawCmd, ...args] = text.split(/\s+/);
-  const cmd = rawCmd!.split("@")[0]!.toLowerCase();
-  // Any command ends whatever the bot was waiting an answer to.
-  clearAnswer(msg.chat.id);
-
+  const cmd = text.split(/\s+/)[0]!.split("@")[0]!.toLowerCase();
   switch (cmd) {
     case "/start":
       await startOnboarding(env, user);
-      return;
+      return true;
     case "/settings":
       await showSettings(env, user);
-      return;
-    case "/cancel":
-      await tg.send(user.tg_id, "Гаразд, скасовано.", { removeKeyboard: true });
-      return;
-    case "/new":
-      if (!(await hasGoogleAuth(env))) {
-        await sendConnectGoogle(env);
-        return;
-      }
-      await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.", {
-        forceReply: "з ким, коли, де…",
-      });
-      return;
-    case "/today":
-    case "/tomorrow":
-    case "/week":
-      await showAgenda(env, cmd.slice(1) as "today" | "tomorrow" | "week");
-      return;
-    case "/free":
-      await showFreeSlots(env);
-      return;
-    case "/mail": {
-      const request = args.join(" ").trim();
-      if (!request) {
-        await tg.send(user.tg_id, "✉️ Що зробити з поштою? Напр.: <i>«перевір нові листи»</i>, <i>«напиши Івану, що зустріч переносимо»</i>.", {
-          keyboard: [[{ text: "📬 Нові листи", callback_data: "q:unread" }]],
-        });
-        // The next message is the mail request.
-        expectAnswer(msg.chat.id, { k: "mailq", src: "", t: null });
-        return;
-      }
-      await startMailDraft(env, msg.chat.id, request);
-      return;
-    }
-    case "/contacts": {
-      const contacts = (await loadDirectory(env)).slice(0, 100);
-      await tg.send(
-        user.tg_id,
-        contacts.length
-          ? `📇 <b>Кого я знаю з вашого календаря</b>\n${contacts.map((c) => `• ${esc(c.name)} — ${esc(c.email)}`).join("\n")}`
-          : "Поки нікого: я беру імена й email учасників ваших подій у Google Calendar. Email нової людини просто напишіть у запиті.",
-      );
-      return;
-    }
+      return true;
+    case "/help":
+      await tg.send(user.tg_id, helpText());
+      return true;
+    case "/reset":
+      forget("");
+      await tg.send(user.tg_id, "🧹 Контекст розмови очищено.");
+      return true;
+    case "/connect":
+      if (await hasGoogleAuth(env)) await tg.send(user.tg_id, "Google уже підключено. Перепідключити — /settings.");
+      else await sendConnectGoogle(env);
+      return true;
   }
-  await tg.send(user.tg_id, helpText(), { menu: MENU_ROWS });
+  return false;
 }
 
+/** n8n: a button press is one more input for the Supervisor ("[Кнопка: accept:…]" + the message it belongs to). */
 async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
-  const tg = new Telegram(env);
   const user = await authorize(env, cq.from);
   if (!user) return;
-  const [kind, a = "", b = ""] = (cq.data ?? "").split(":");
-  let toast: string | undefined;
-  try {
-    if (kind === "d") toast = await handleCardCallback(env, user, cq.message, a);
-    else if (kind === "a") toast = await handleActionCallback(env, cq.message, a);
-    else if (kind === "m") toast = await handleMailCallback(env, cq.message, a);
-    else if (kind === "g") toast = await handleMailQuickAction(env, a, b);
-    else if (kind === "q" && a === "unread") {
-      clearAnswer(env.OWNER_TELEGRAM_ID);
-      await startMailDraft(env, env.OWNER_TELEGRAM_ID, "покажи непрочитані листи у вхідних");
-    }
-  } finally {
-    await tg.answerCallback(cq.id, toast).catch(() => undefined);
-  }
+  const chatId = cq.message?.chat.id ?? user.tg_id;
+  await env.jobs.send({
+    type: "agent",
+    input: {
+      chatId,
+      inputType: "callback",
+      text: `[Кнопка: ${cq.data ?? ""}]`,
+      replyText: cq.message?.text ?? cq.message?.caption ?? null,
+      replyRef: refOf(cq.message),
+      callbackData: cq.data ?? null,
+      callbackId: cq.id,
+      callbackMessageId: cq.message?.message_id ?? null,
+    },
+    photoIds: [],
+  });
 }
 
 /**

@@ -216,15 +216,9 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
 }
 
 const BOT_COMMANDS = [
-  { command: "new", description: "Поставити зустріч" },
-  { command: "today", description: "Зустрічі на сьогодні" },
-  { command: "tomorrow", description: "Зустрічі на завтра" },
-  { command: "week", description: "Зустрічі на тиждень" },
-  { command: "free", description: "Вільні вікна" },
-  { command: "mail", description: "Пошта Gmail" },
-  { command: "contacts", description: "Кого я знаю з календаря" },
+  { command: "start", description: "Почати / підключити Google" },
   { command: "settings", description: "Налаштування" },
-  { command: "cancel", description: "Скасувати поточну дію" },
+  { command: "reset", description: "Почати розмову заново" },
   { command: "help", description: "Що вміє бот" },
 ];
 
