@@ -401,7 +401,7 @@ describe("typing indicator", () => {
     vi.useFakeTimers();
     try {
       await connectGoogle();
-      let release!: () => void;
+      let release: (() => void) | undefined;
       const calls = mockFetch([
         calendarList([]),
         (url) =>
@@ -411,13 +411,20 @@ describe("typing indicator", () => {
       ]);
       const { env, jobs } = testEnv();
       const running = runJobs(env, [{ body: { type: "parse", draft: { id: "d1", src: "зустріч", st: "text" }, messageId: null } }]);
+      // Wait (in fake time, with real async crypto in between) until the job is inside the LLM call.
+      for (let i = 0; i < 200 && !release; i++) await vi.advanceTimersByTimeAsync(50);
+      expect(release).toBeDefined();
+      const before = tgCalls(calls, "sendChatAction").length;
+      expect(before).toBeGreaterThanOrEqual(1);
       await vi.advanceTimersByTimeAsync(9000);
+      // Repeated every 4 s while the owner waits.
       const during = tgCalls(calls, "sendChatAction").length;
-      expect(during).toBeGreaterThanOrEqual(3);
-      release();
+      expect(during - before).toBeGreaterThanOrEqual(2);
+      release!();
       await vi.advanceTimersByTimeAsync(0);
       await running;
       await vi.advanceTimersByTimeAsync(9000);
+      // …and stops when the answer is sent.
       expect(tgCalls(calls, "sendChatAction").length).toBe(during);
       expect(jobs).toEqual([]);
     } finally {
