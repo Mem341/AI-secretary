@@ -5,6 +5,9 @@ import { firstTime } from "../session";
 import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
 import { Calendar, type GEvent } from "./calendar";
+import { loadOwnerSettings, type OwnerSettings } from "./oauth";
+import { wakeReady } from "./pubsub";
+import { signalCalendar, signalTarget, syncSignals } from "./signals";
 import { type GMessage, Gmail, toMailMessage } from "./gmail";
 import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
 
@@ -112,24 +115,45 @@ async function sendReminder(env: Env, cal: Calendar, tg: Telegram, ev: GEvent, m
 // Google sends the email; Gmail pushes the bot at once (google/pubsub.ts); the bot recognises the calendar's reminder
 // email, sends the Telegram reminder and moves the email to Trash.
 
-/** The owner's reminders for a meeting: an email per chosen mark (Google allows 5) plus a phone popup if room. */
-export function desiredReminders(marks: number[]): NonNullable<GEvent["reminders"]> {
-  const overrides = marks.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
-  if (overrides.length < 5) overrides.push({ method: "popup", minutes: 10 });
+/** Where reminders go: Telegram (t) and Google Calendar's own notifications (c). Both by default. */
+export interface Channels {
+  t: boolean;
+  c: boolean;
+}
+
+export async function reminderChannels(env: Env): Promise<Channels> {
+  const s = await loadOwnerSettings(env).catch((): OwnerSettings => ({}));
+  return { t: s.n?.t ?? true, c: s.n?.c ?? true };
+}
+
+const emails = (marks: number[]) => marks.slice(0, 5).map((minutes) => ({ method: "email", minutes }));
+const popups = (marks: number[]) => marks.slice(0, 5).map((minutes) => ({ method: "popup", minutes }));
+
+/**
+ * The owner's reminders on a meeting itself. With the signal calendar the meeting carries only Calendar notifications
+ * (popups) and the Telegram signals live on its shadow. Without it (no permission yet) the 5 places Google allows are
+ * shared: an email signal per mark for Telegram first, then popups for the marks nearest to the start.
+ */
+export function desiredReminders(marks: number[], ch: Channels = { t: true, c: true }, signalCalendar = false): NonNullable<GEvent["reminders"]> {
+  if (!marks.length) return { useDefault: true };
+  if (signalCalendar) return { useDefault: false, overrides: ch.c ? popups(marks) : [] };
+  const overrides = ch.t ? emails(marks) : [];
+  if (ch.c) for (const m of [...marks].sort((x, y) => x - y)) if (overrides.length < 5) overrides.push({ method: "popup", minutes: m });
   return { useDefault: false, overrides };
 }
 
-const sameReminders = (a: GEvent["reminders"], b: NonNullable<GEvent["reminders"]>) =>
-  !a?.useDefault &&
-  JSON.stringify([...(a?.overrides ?? [])].map((o) => `${o.method}:${o.minutes}`).sort()) ===
-    JSON.stringify(b.overrides!.map((o) => `${o.method}:${o.minutes}`).sort());
+const reminderKey = (r: GEvent["reminders"]) =>
+  r?.useDefault ? "default" : JSON.stringify([...(r?.overrides ?? [])].map((o) => `${o.method}:${o.minutes}`).sort());
 
 /**
- * Puts the reminder emails on the owner's upcoming meetings (next 8 days; a recurring series once, on its master).
- * Only changes what differs. Returns how many events were changed.
+ * Puts the owner's reminders on the upcoming meetings (next 8 days; a recurring series once, on its master) and keeps
+ * their Telegram signals in the bot's signal calendar in step: new or moved meetings get a shadow, cancelled ones lose
+ * it. `events` = only these (a calendar push); none = the whole coming week (also removes stale shadows). Only
+ * changes what differs. Returns how many writes were made.
  */
 export async function applyEmailReminders(env: Env, events?: GEvent[], now = Date.now()): Promise<number> {
   const marks = await reminderMarks(env);
+  const ch = await reminderChannels(env);
   const cal = new Calendar(env);
   const list =
     events ??
@@ -142,20 +166,32 @@ export async function applyEmailReminders(env: Env, events?: GEvent[], now = Dat
         maxResults: "250",
       })
     ).items;
-  const want = marks.length ? desiredReminders(marks) : { useDefault: true };
+  // Telegram signals need Google to wake the bot; Calendar notifications work without it.
+  const telegram = ch.t && marks.length > 0 && (await wakeReady(env));
+  const signals = telegram ? await signalCalendar(env) : null;
+  const want = desiredReminders(marks, { t: telegram, c: ch.c }, !!signals);
   const done = new Set<string>();
+  const upcoming: { ev: GEvent; start: number; end: number }[] = [];
   let changed = 0;
   for (const ev of list) {
     const change = eventToChange(ev);
     if (change.kind !== "upsert" || change.meeting.end_at < now) continue;
+    upcoming.push({ ev, start: change.meeting.start_at, end: change.meeting.end_at });
     const target = ev.recurringEventId ?? ev.id;
     if (done.has(target)) continue;
     done.add(target);
-    if (marks.length ? sameReminders(ev.reminders, want) : ev.reminders?.useDefault) continue;
+    if (reminderKey(ev.reminders) === reminderKey(want)) continue;
     await cal
       .setReminders(target, want)
       .then(() => changed++)
       .catch((err) => console.warn("gcal: cannot set reminders", target, err instanceof Error ? err.message : err));
+  }
+  if (signals) {
+    const gone = list.filter((ev) => eventToChange(ev).kind !== "upsert").map((ev) => ev.id);
+    changed += await syncSignals(env, signals, upcoming, gone, marks, !events, now).catch((err) => {
+      console.warn("signals:", err instanceof Error ? err.message : err);
+      return 0;
+    });
   }
   return changed;
 }
@@ -189,7 +225,8 @@ export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now(
   const id = eventIdFromEmail(m);
   if (!id) return false;
   const cal = new Calendar(env);
-  const ev = await cal.getEvent(id).catch(() => null);
+  // A signal (the shadow in the bot's signal calendar) stands for the owner's meeting.
+  const ev = await cal.getEvent((await signalTarget(env, id)) ?? id).catch(() => null);
   const change = ev ? eventToChange(ev) : null;
   if (ev && change?.kind === "upsert" && change.meeting.start_at > now - 5 * MINUTE) {
     const marks = await reminderMarks(env);

@@ -6,7 +6,7 @@ import type { InlineKeyboard } from "../telegram/types";
 import { clearMemory, MEMORY_CHOICES, memoryStatus, SEND } from "../agent/memory";
 import { wakeReady } from "../google/pubsub";
 import { refreshCommands } from "./commands";
-import { applyEmailReminders } from "../google/reminders";
+import { applyEmailReminders, reminderChannels } from "../google/reminders";
 import { integrationSource } from "../integrations";
 import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
 import type { User } from "./owner";
@@ -138,18 +138,22 @@ async function memoryView(env: Env, confirmClear = false): Promise<{ html: strin
 async function remindersView(env: Env): Promise<{ html: string; keyboard: InlineKeyboard }> {
   const marks = await reminderMarks(env);
   const awake = await wakeReady(env);
+  const ch = await reminderChannels(env);
   const button = (m: number) => ({ text: `${marks.includes(m) ? "✅" : "▫️"} ${m === 60 ? "1 год" : `${m} хв`}`, callback_data: `set:r:${m}` });
   return {
     html: [
-      "⏰ <b>Коли нагадувати про зустріч?</b>",
+      "⏰ <b>Нагадування про зустрічі</b>",
       "",
-      "Оберіть один чи кілька варіантів — натисніть ще раз, щоб прибрати.",
-      "",
+      "<b>Коли:</b> оберіть один чи кілька варіантів — натисніть ще раз, щоб прибрати.",
       `Зараз: ${marksText(marks)}`,
       "",
-      awake
-        ? "<i>Як це працює: я ставлю на ваші зустрічі нагадування листом на обрані хвилини. У потрібну хвилину Google надсилає лист — я одразу пересилаю нагадування сюди й прибираю лист із пошти. Ні cron, ні сторонніх сервісів.</i>"
-        : "⚠️ <b>Нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я налаштую все сам або підкажу один крок.",
+      "<b>Куди:</b>",
+      `${ch.t ? "✅" : "▫️"} Telegram — повідомлення від мене`,
+      `${ch.c ? "✅" : "▫️"} Google Calendar — сповіщення календаря на телефоні й компʼютері`,
+      "",
+      ch.t && !awake
+        ? "⚠️ <b>Telegram-нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я налаштую все сам або підкажу один крок."
+        : "<i>Як це працює: на кожен обраний час ставлю сповіщення Google Calendar на вашу зустріч, а для Telegram — сигнал у моєму окремому календарі «AI-secretary · сигнали». У потрібну хвилину Google будить мене — і я пишу вам сюди. Ні cron, ні сторонніх сервісів.</i>",
     ].join("\n"),
     keyboard: [
       REMINDER_CHOICES.slice(0, 3).map(button),
@@ -158,7 +162,11 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
         { text: "🔕 Не нагадувати", callback_data: "set:r:off" },
         { text: "⬅️ Готово", callback_data: "set:back" },
       ],
-      ...(awake ? [] : [[{ text: "🔁 Перевірити", callback_data: "set:wake" }]]),
+      [
+        { text: `${ch.t ? "✅" : "▫️"} Telegram`, callback_data: "set:ch:t" },
+        { text: `${ch.c ? "✅" : "▫️"} Google Calendar`, callback_data: "set:ch:c" },
+      ],
+      ...(ch.t && !awake ? [[{ text: "🔁 Перевірити", callback_data: "set:wake" }]] : []),
     ],
   };
 }
@@ -256,6 +264,15 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     await answer(settings.d ? "Ранковий список увімкнено" : "Ранковий список вимкнено");
     return show(await mainView(env, user));
   }
+  if (data === "set:ch:t" || data === "set:ch:c") {
+    const ch = await reminderChannels(env);
+    const which = data.endsWith(":t") ? "t" : "c";
+    settings.n = { ...ch, [which]: !ch[which] };
+    await saveOwnerSettings(env, settings);
+    await answer(`${which === "t" ? "Telegram" : "Google Calendar"}: ${settings.n[which] ? "увімкнено" : "вимкнено"}`);
+    await applyEmailReminders(env).catch(() => 0);
+    return show(await remindersView(env));
+  }
   if (data.startsWith("set:r:")) {
     const value = data.slice("set:r:".length);
     const marks = await reminderMarks(env);
@@ -263,8 +280,8 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     settings.r = value === "off" ? [] : marks.includes(m) ? marks.filter((x) => x !== m) : [...marks, m].sort((a, b) => b - a);
     await saveOwnerSettings(env, settings);
     await answer(settings.r.length ? `Нагадування: ${marksText(settings.r)}` : "Нагадування вимкнено");
-    // The meetings of the coming week get the new reminder emails.
-    if (await wakeReady(env)) await applyEmailReminders(env).catch(() => 0);
+    // The meetings of the coming week get the new reminders.
+    await applyEmailReminders(env).catch(() => 0);
     return show(await remindersView(env));
   }
   await answer();

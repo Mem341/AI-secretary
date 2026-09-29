@@ -10,6 +10,8 @@ export const GOOGLE_SCOPES = [
   "openid",
   "email",
   "https://www.googleapis.com/auth/calendar.events",
+  // Only calendars the bot creates itself: its signal calendar for Telegram reminders (google/signals.ts).
+  "https://www.googleapis.com/auth/calendar.app.created",
   // Read/write/send Gmail except permanently deleting; plus managing label definitions.
   // NOTE: these are Google "restricted" scopes. A published but unverified app still works for its single owner
   // (Google shows an "unverified app" warning); a consent screen left in "Testing" expires grants after 7 days.
@@ -118,6 +120,10 @@ export interface OwnerSettings {
   m?: number;
   /** Whether Google wakes the bot (Gmail push set up): "ok", or why not (google/pubsub.ts). */
   p?: string;
+  /** Where reminders go: t = Telegram, c = Google Calendar notifications (both by default). */
+  n?: { t?: boolean; c?: boolean };
+  /** The bot's signal calendar (google/signals.ts). */
+  sc?: string;
 }
 
 /** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
