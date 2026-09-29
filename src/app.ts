@@ -60,6 +60,11 @@ async function nudgeReminders(env: Env): Promise<void> {
   if (firstTime("nudge:reminders", 3 * 60_000)) await env.jobs.send({ type: "reminders" }).catch(() => undefined);
 }
 
+/** Once per running copy (a new deployment starts new ones): is there a «what is new» for the owner? */
+async function checkNews(env: Env): Promise<void> {
+  if (firstTime("news", 6 * 3600_000)) await env.jobs.send({ type: "news" }).catch(() => undefined);
+}
+
 /** POST /api/telegram — Telegram webhook. Answers at once; the update is handled in the background. */
 export async function telegramWebhook(req: Request, env: Env, runtime: Runtime): Promise<Response> {
   if (!safeEqual(req.headers.get("x-telegram-bot-api-secret-token"), env.TELEGRAM_WEBHOOK_SECRET)) {
@@ -67,6 +72,7 @@ export async function telegramWebhook(req: Request, env: Env, runtime: Runtime):
   }
   const update = (await req.json()) as TgUpdate;
   await nudgeReminders(env);
+  await checkNews(env);
   runtime.defer(
     handleUpdate(env, update).catch(async (err) => {
       await logError(env, "telegram.update", err);
@@ -271,6 +277,7 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
 export async function setupPage(_req: Request, env: Env): Promise<Response> {
   try {
     const { username } = await ensureTelegramWebhook(env);
+    await checkNews(env);
     return new Response(null, { status: 302, headers: { location: `https://t.me/${username}?start=setup`, "cache-control": "no-store" } });
   } catch {
     return messagePage("⚠️", "Бот не відповідає", "Telegram не прийняв токен бота. Перевірте токен і перерозгорніть проєкт.", 502);

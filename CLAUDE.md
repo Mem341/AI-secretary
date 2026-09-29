@@ -101,4 +101,7 @@ webhook and redirects to the bot; `/api/health` shows the state.
   `aisStart` in the same write (or `aisBotCancel` before a delete).
 - Keep the Vercel `api/*` files and the docs' URLs in sync when adding an endpoint. Do not add other platforms.
 - Compiles to CommonJS (`tsconfig.json`), which Vercel's Node runtime needs for extensionless imports.
+- Every change the owner would notice gets a release in `src/changelog.ts` (next number, newest first, plain words):
+  after the deploy the bot tells the owner once what was added/changed (`bot/news.ts`, the last seen number is
+  `OwnerSettings.v`) and checks live whether the owner must do something (reconnect Google, the reminders check).
 - Check before pushing: `npm run typecheck && npm test` (tests mock all outbound HTTP; `test/helpers.ts` has a fake Telegram that keeps messages, entities and the pin).

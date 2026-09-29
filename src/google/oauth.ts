@@ -140,6 +140,8 @@ export interface OwnerSettings {
   sc?: string;
   /** The morning report (google/digest.ts): t = time, minutes after midnight; b = the blocks ticked. */
   dg?: { t?: number; b?: string[] };
+  /** The last version whose «what is new» the owner got (changelog.ts, bot/news.ts). */
+  v?: number;
 }
 
 /** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
