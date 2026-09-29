@@ -55,7 +55,7 @@ export function gmailPushEndpoint(env: Env): string {
 
 let seenLabelId: string | null = null;
 
-async function seenLabel(gmail: Gmail): Promise<string> {
+export async function seenLabel(gmail: Gmail): Promise<string> {
   seenLabelId ??= (await gmail.ensureLabel(SEEN_LABEL, true)).id;
   return seenLabelId;
 }

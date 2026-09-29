@@ -14,6 +14,8 @@ import { loadGrant, loadOwnerSettings, saveOwnerSettings } from "./oauth";
 
 const NAME = "AI-secretary · сигнали";
 const FOR = "aisFor";
+/** aisFor of the test signal from «🔁 Перевірити» (no meeting behind it). */
+export const TEST_PREFIX = "test:";
 
 /** The shadow's id for a meeting: fixed, so a move just rewrites it (hex fits Google's a–v, 0–9 id alphabet). */
 export function shadowId(meetingId: string): string {
@@ -86,6 +88,8 @@ export async function syncSignals(
       summary: `🔔 ${ev.summary ?? "зустріч"}`,
       start: { dateTime: new Date(start).toISOString() },
       end: { dateTime: new Date(end).toISOString() },
+      // A shadow deleted before keeps its id as a cancelled event: writing it again must bring it back.
+      status: "confirmed",
       transparency: "transparent",
       visibility: "private",
       reminders: { useDefault: false, overrides },
@@ -97,7 +101,15 @@ export async function syncSignals(
     writes++;
   }
   const drop = new Set(gone.map(shadowId));
-  if (full) for (const e of existing) if (!keep.has(e.id) && e.extendedProperties?.private?.[FOR]) drop.add(e.id);
+  if (full) {
+    for (const e of existing) {
+      const target = e.extendedProperties?.private?.[FOR];
+      if (!target || keep.has(e.id)) continue;
+      // A running test signal stays until its time has passed.
+      if (target.startsWith(TEST_PREFIX) && Date.parse(e.end?.dateTime ?? "") > now) continue;
+      drop.add(e.id);
+    }
+  }
   for (const id of drop) {
     if (keep.has(id)) continue;
     if (!full && !byId.has(id)) continue;

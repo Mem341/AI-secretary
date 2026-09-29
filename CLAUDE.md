@@ -54,8 +54,8 @@ webhook and redirects to the bot; `/api/health` shows the state.
   `applyEmailReminders` keeps both in step (connect, daily, calendar push, settings);
   Google sends the email at that minute, Gmail push wakes the bot, `handleReminderEmail` sends the Telegram reminder
   and trashes the email. The Gmail push itself is set up by the bot in the OAuth client's project (`pubsub.ts`
-  `setupGoogleWake`, scope pubsub; the owner only enables the Cloud Pub/Sub API); /settings → ⏰ → «Перевірити»
-  reports what is missing.
+  `setupGoogleWake`, scope pubsub; the owner only enables the Cloud Pub/Sub API); /settings → ⏰ → «Перевірити» (`wake.ts`
+  `reportWake`) checks each link in plain words and sends a test signal (`TEST_PREFIX`) that comes back as «✅ Тест пройдено».
 - `vercel.json`: the one daily cron (digest, renewing the calendar channel and the Gmail watch) — do not add more;
   /api/cron/reminders stays as a manual check of reminders.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived

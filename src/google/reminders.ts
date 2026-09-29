@@ -7,7 +7,7 @@ import { hiddenData } from "../telegram/hidden";
 import { Calendar, type GEvent } from "./calendar";
 import { loadOwnerSettings, type OwnerSettings } from "./oauth";
 import { wakeReady } from "./pubsub";
-import { signalCalendar, signalTarget, syncSignals } from "./signals";
+import { signalCalendar, signalTarget, syncSignals, TEST_PREFIX } from "./signals";
 import { type GMessage, Gmail, toMailMessage } from "./gmail";
 import { type EventRef, eventToChange, listMeetings, type Meeting } from "./sync";
 
@@ -221,12 +221,28 @@ export function eventIdFromEmail(m: GMessage): string | null {
  */
 export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now()): Promise<boolean> {
   const mail = toMailMessage(m);
-  if (!/calendar-notification@google\.com/i.test(mail.from) || !REMINDER_SUBJECT.test(mail.subject.trim())) return false;
+  if (!/calendar-notification@google\.com/i.test(mail.from)) return false;
   const id = eventIdFromEmail(m);
   if (!id) return false;
+  // A signal (the shadow in the bot's signal calendar) stands for the owner's meeting — whatever the subject's language.
+  const target = await signalTarget(env, id);
+  if (!target && !REMINDER_SUBJECT.test(mail.subject.trim())) return false;
+  const gmail = new Gmail(env);
+  if (target?.startsWith(TEST_PREFIX)) {
+    const started = Number(target.slice(TEST_PREFIX.length));
+    if (firstTime(`remind:${target}`, DAY)) {
+      await new Telegram(env).send(
+        env.OWNER_TELEGRAM_ID,
+        "✅ <b>Тест пройдено.</b> Google надіслав сигнал, пошта одразу розбудила мене — нагадування про зустрічі приходитимуть самі в обрані хвилини.",
+      );
+    }
+    const sc = (await loadOwnerSettings(env).catch((): OwnerSettings => ({}))).sc;
+    if (sc && started) await new Calendar(env, sc).deleteSilently(id).catch(() => undefined);
+    await gmail.trash(m.id).catch(() => undefined);
+    return true;
+  }
   const cal = new Calendar(env);
-  // A signal (the shadow in the bot's signal calendar) stands for the owner's meeting.
-  const ev = await cal.getEvent((await signalTarget(env, id)) ?? id).catch(() => null);
+  const ev = await cal.getEvent(target ?? id).catch(() => null);
   const change = ev ? eventToChange(ev) : null;
   if (ev && change?.kind === "upsert" && change.meeting.start_at > now - 5 * MINUTE) {
     const marks = await reminderMarks(env);
@@ -235,7 +251,7 @@ export async function handleReminderEmail(env: Env, m: GMessage, now = Date.now(
     const mark = marks.filter((x) => left <= x * MINUTE + EARLY).sort((a, b) => a - b)[0] ?? Math.max(1, Math.round(left / MINUTE));
     await sendReminder(env, cal, new Telegram(env), ev, change.meeting, mark, now);
   }
-  await new Gmail(env).trash(m.id).catch(() => undefined);
+  await gmail.trash(m.id).catch(() => undefined);
   return true;
 }
 
