@@ -74,15 +74,26 @@ function bitrixRoute(writes: { method: string; body: Record<string, unknown> }[]
       }
       case "task.stages.get":
         return Response.json({ result: { "11": { ID: "11", TITLE: "Узгодження" } } });
-      case "batch":
-        return Response.json({
-          result: {
-            result: {
-              t123: [{ ID: "1", AUTHOR_ID: "7", AUTHOR_NAME: "Іван Петренко", POST_DATE: "2026-09-28T12:00:00+03:00", POST_MESSAGE: "[b]Чекаю[/b] цифри від бухгалтерії" }],
-              t124: [],
-            },
+      case "batch": {
+        // Old-style comments (t…), the task chat of the new card (c… → chat id, m… → its messages).
+        const answers: Record<string, unknown> = {
+          t123: [{ ID: "1", AUTHOR_ID: "7", AUTHOR_NAME: "Іван Петренко", POST_DATE: "2026-09-28T12:00:00+03:00", POST_MESSAGE: "[b]Чекаю[/b] цифри від бухгалтерії" }],
+          t124: [],
+          c124: { ID: 777 },
+          m124: {
+            messages: [
+              { id: 2, author_id: 9, date: "2026-09-29T10:00:00+03:00", text: "Постачальник надіслав правки, узгоджую з юристом" },
+              { id: 1, author_id: 0, date: "2026-09-25T09:00:00+03:00", text: "Задачу взято в роботу" },
+            ],
+            users: [{ id: 9, name: "Олена Коваль" }],
           },
-        });
+        };
+        const cmd = (body as { cmd: Record<string, string> }).cmd;
+        return Response.json({ result: { result: Object.fromEntries(Object.keys(cmd).filter((k) => k in answers).map((k) => [k, answers[k]])) } });
+      }
+      case "im.message.add":
+        writes.push({ method, body });
+        return Response.json({ result: 91 });
       case "tasks.task.add":
         writes.push({ method, body });
         return Response.json({ result: { task: { id: "200", title: "x", status: "2" } } });
@@ -173,7 +184,7 @@ describe("/bitrix menu and the Excel report", () => {
     // Stored ZIP: the sheet XML is readable in the bytes.
     const text = new TextDecoder().decode(report.file);
     expect(text.startsWith("PK")).toBe(true);
-    for (const s of ["Звіт за вересень", "Узгодження", "Виконується", "Іван чекає цифри від бухгалтерії", "Іван Петренко", "Олександр Коваленко", "01.09.2026", "Коментарів немає", "Аналітика"]) {
+    for (const s of ["Звіт за вересень", "Узгодження", "Виконується", "Іван чекає цифри від бухгалтерії", "Іван Петренко", "Олександр Коваленко", "01.09.2026", "Олена Коваль", "Аналітика"]) {
       expect(text).toContain(s);
     }
   });
@@ -185,5 +196,31 @@ describe("BITRIX_WEBHOOK_URL", () => {
     expect(bitrixUrl("https://acme.bitrix24.ua/rest/1/abc/profile.json")).toBe("https://acme.bitrix24.ua/rest/1/abc/");
     expect(bitrixUrl("")).toBe("");
     expect(() => bitrixUrl("acme.bitrix24.ua")).toThrow();
+  });
+});
+
+describe("the task chat («Чат завдання») of new Bitrix24 task cards", () => {
+  it("get_task_comments reads the task chat (people and system status messages) together with old comments, oldest first", async () => {
+    mockFetch([bitrixRoute()]);
+    const { env } = testEnv({ BITRIX_WEBHOOK_URL: WEBHOOK });
+    const tool = bitrixTools(env).find((t) => t.spec.name === "get_task_comments")!;
+    const out = (await tool.run({ taskId: 124 })) as { author: string; text: string }[];
+    expect(out).toEqual([
+      expect.objectContaining({ author: "Система", text: "Задачу взято в роботу" }),
+      expect.objectContaining({ author: "Олена Коваль", text: "Постачальник надіслав правки, узгоджую з юристом" }),
+    ]);
+  });
+
+  it("a comment goes into the task chat when the task has one, else as an old-style comment", async () => {
+    const writes: { method: string; body: Record<string, unknown> }[] = [];
+    mockFetch([bitrixRoute(writes)]);
+    const { env } = testEnv({ BITRIX_WEBHOOK_URL: WEBHOOK });
+    const tool = bitrixTools(env).find((t) => t.spec.name === "add_comment")!;
+    await tool.run({ taskId: 124, text: "Документи надіслано" });
+    await tool.run({ taskId: 123, text: "Цифри будуть завтра" });
+    expect(writes).toEqual([
+      { method: "im.message.add", body: { DIALOG_ID: "chat777", MESSAGE: "Документи надіслано" } },
+      { method: "task.commentitem.add", body: { TASKID: 123, FIELDS: { POST_MESSAGE: "Цифри будуть завтра" } } },
+    ]);
   });
 });

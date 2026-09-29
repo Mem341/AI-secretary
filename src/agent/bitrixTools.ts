@@ -166,7 +166,8 @@ export function bitrixTools(env: Env): Tool[] {
     {
       spec: {
         name: "get_task_comments",
-        description: "The latest comments of a task (who, when, what) — the real state of work is usually there.",
+        description:
+          "The task's discussion — its «Чат завдання» (incl. system messages about status changes) and comments: who, when, what. The real state of work is usually there.",
         parameters: object({ taskId: { type: "integer" }, limit: { type: "integer", description: "Default 15" } }, ["taskId"]),
       },
       async run(a) {
