@@ -4,5 +4,5 @@
     "api/**/*.ts": { "maxDuration": 60 }
   },
   "redirects": [{ "source": "/", "destination": "/api/setup", "permanent": false }],
-  "crons": [{ "path": "/api/cron/daily", "schedule": "17 3 * * *" }]
+  "crons": [{ "path": "/api/cron/daily", "schedule": "45 4 * * *" }]
 }

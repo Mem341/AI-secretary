@@ -15,6 +15,7 @@ import {
   mockFetch,
   OWNER,
   resetInstance,
+  routerRoute,
   runJobs,
   testEnv,
   tg,
@@ -194,11 +195,12 @@ describe("meeting card without a database", () => {
     ]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра о 10 по бюджету"));
-    expect(jobs[0]!.body.type).toBe("parse");
+    expect(jobs[0]!.body).toMatchObject({ type: "route", text: "зустріч з Олегом завтра о 10 по бюджету" });
     await runJobs(env, jobs);
 
-    const llm = calls.find((c) => c.url.includes("openrouter.ai"))!.body as { model: string };
-    expect(llm.model).toBe("test/card-model");
+    const models = calls.filter((c) => c.url.includes("openrouter.ai")).map((c) => (c.body as { model: string }).model);
+    // The cheap router decides first (here it falls back to "meeting"), then the main model builds the card.
+    expect(models).toEqual(["test/router-model", "test/card-model"]);
     const card = lastBotMessage("Нова зустріч");
     const data = readHidden<CardData>(card)!;
     expect(data.k).toBe("card");
@@ -261,6 +263,7 @@ describe("meeting card without a database", () => {
     const sent: string[] = [];
     mockFetch([
       calendarList([]),
+      routerRoute("meeting"),
       (url, init) => {
         if (url.hostname !== "openrouter.ai") return undefined;
         const body = JSON.parse(init.bodyText) as { messages: { content: { text?: string }[] | string }[] };
@@ -311,8 +314,9 @@ describe("meeting card without a database", () => {
     const calls = mockFetch([]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра"));
+    await runJobs(env, jobs);
     expect(jobs).toEqual([]);
-    expect(String(tgCalls(calls, "sendMessage")[0]!.text)).toContain("підключіть Google");
+    expect(tgCalls(calls, "sendMessage").map((m) => String(m.text)).join("\n")).toContain("підключіть Google");
   });
 });
 
@@ -335,7 +339,7 @@ describe("voice", () => {
     await runJobs(env, [jobs.shift()!]);
     expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
     expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>зустріч з Іваном завтра о 10</i>"))).toBe(true);
-    expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
+    expect(jobs.map((j) => j.body.type)).toEqual(["route"]);
   });
 });
 

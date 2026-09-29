@@ -15,6 +15,7 @@ import {
   mockFetch,
   OWNER,
   resetInstance,
+  routerRoute,
   runJobs,
   testEnv,
   tg,
@@ -142,7 +143,7 @@ describe("Gmail agent", () => {
     ]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, text("перевір пошту"));
-    expect(jobs.map((j) => j.body)).toEqual([{ type: "mail", text: "перевір пошту", targetId: null }]);
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "route", text: "перевір пошту", st: "text" }]);
     await runJobs(env, jobs);
 
     const search = calls.find((c) => c.url.includes("/gmail/v1/users/me/messages?"))!;
@@ -190,6 +191,7 @@ describe("Gmail agent", () => {
     let n = 0;
     mockFetch([
       knownPeople,
+      routerRoute("mail"),
       (url) =>
         url.hostname === "openrouter.ai"
           ? llmReply(
@@ -258,6 +260,7 @@ describe("Gmail agent", () => {
     const calls = mockFetch([]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, text("перевір пошту"));
+    await runJobs(env, jobs);
     expect(jobs).toEqual([]);
     expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("дайте доступ до Gmail");
   });

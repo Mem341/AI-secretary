@@ -22,10 +22,13 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - `api/` — Vercel Functions (thin wrappers); `vercel.json` — function limits, `/` redirect, daily cron.
 - `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap.
 - `src/jobs.ts` — background jobs (run after the response, 3 attempts).
-- `src/bot/` — `meetings.ts` (meeting cards + the text router), `actions.ts` (reschedule/cancel/note by reply),
+- `src/bot/` — `assistant.ts` (the ROUTER_MODEL router for free text, schedule answers, chat), `meetings.ts` (meeting cards + the reply-context router), `actions.ts` (reschedule/cancel/note by reply),
   `mail.ts` (Gmail agent), `onboarding.ts` (/start, /settings), `owner.ts` (profile from Telegram/Google/env),
   `contacts.ts` (names → emails from calendar attendees), `card.ts`.
-- `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices, Gmail API + Pub/Sub push.
+- `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices, `reminders.ts` (morning digest,
+  reminders via /api/cron/reminders), Gmail API + Pub/Sub push.
+- `vercel.json` crons stay daily (Vercel Hobby rejects more frequent ones); /api/cron/reminders is for an optional
+  5-minute cron.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived
   in-instance memory; `src/zoom/` — Zoom API.
 

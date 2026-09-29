@@ -1,11 +1,12 @@
 import { parseAction } from "./bot/actions";
 import { parseMail } from "./bot/mail";
-import { type CardData, type Draft, editDraft, handleOwnerText, parseDraft, processBatch } from "./bot/meetings";
+import { type CardData, type Draft, editDraft, handleOwnerText, parseDraft, processBatch, routeText, type SourceType } from "./bot/meetings";
 import { helpText } from "./bot/onboarding";
 import { loadOwner } from "./bot/owner";
 import { type Env, gmailPushConfigured } from "./env";
 import { gmailSync, startGmailWatch } from "./google/gmailPush";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
+import { sendDigest, sendReminders } from "./google/reminders";
 import { markUpcoming, startWatch, syncRecent } from "./google/sync";
 import { logError } from "./lib/errors";
 import { transcribe } from "./stt/transcribe";
@@ -19,6 +20,8 @@ import type { TgMessage } from "./telegram/types";
 export type Job =
   /** Debounced batch of forwarded messages / screenshots; processed only if `seq` is still the latest. */
   | { type: "batch"; chatId: number; seq: number }
+  /** A new free-text request: the router model decides what it is. */
+  | { type: "route"; text: string; st: SourceType }
   /** Build a card from a request and show it in place of `messageId` (a placeholder), or as a new message. */
   | { type: "parse"; draft: Draft; messageId: number | null }
   /** Apply a free-text correction to a card. */
@@ -36,12 +39,14 @@ export type Job =
   /** Daily: renew the push channels, remember newly added events (safety net for lost pushes). */
   | { type: "daily" }
   /** Report emails that arrived since the last Gmail push. */
-  | { type: "gmail_sync" };
+  | { type: "gmail_sync" }
+  /** Telegram reminders shortly before meetings (/api/cron/reminders). */
+  | { type: "reminders" };
 
 export const JOB_ATTEMPTS = 3;
 
 /** Jobs the owner is waiting for: the chat shows "печатает…" while they run. */
-const VISIBLE_JOBS = new Set<Job["type"]>(["batch", "parse", "edit", "action", "mail", "voice"]);
+const VISIBLE_JOBS = new Set<Job["type"]>(["route", "batch", "parse", "edit", "action", "mail", "voice"]);
 
 export async function runJob(env: Env, job: Job): Promise<void> {
   if (!VISIBLE_JOBS.has(job.type)) return runJobInner(env, job);
@@ -55,6 +60,8 @@ export async function runJob(env: Env, job: Job): Promise<void> {
 
 async function runJobInner(env: Env, job: Job): Promise<void> {
   switch (job.type) {
+    case "route":
+      return routeText(env, job.text, job.st);
     case "batch":
       return processBatch(env, job.chatId, job.seq);
     case "parse":
@@ -91,6 +98,7 @@ async function runJobInner(env: Env, job: Job): Promise<void> {
     }
     case "daily":
       if (!(await hasGoogleAuth(env))) return;
+      await sendDigest(env).catch((err) => logError(env, "digest", err));
       await startWatch(env);
       await markUpcoming(env);
       // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.
@@ -100,6 +108,9 @@ async function runJobInner(env: Env, job: Job): Promise<void> {
       return;
     case "gmail_sync":
       if (await hasGmailScope(env)) await gmailSync(env);
+      return;
+    case "reminders":
+      if (await hasGoogleAuth(env)) await sendReminders(env);
       return;
   }
 }

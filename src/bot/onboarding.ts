@@ -46,12 +46,13 @@ export async function showSettings(env: Env, user: User): Promise<void> {
     `Тривалість за замовчуванням: ${durationOf(user)} хв`,
     `Формат за замовчуванням: ${FORMAT_LABELS[formatOf(user)]}`,
     `Адреса за замовчуванням: ${esc(user.defaults.address ?? "—")}`,
-    `Модель ШІ: ${esc(env.LLM_MODEL)}`,
+    `Модель ШІ: ${esc(env.LLM_MODEL)} (роутер: ${esc(env.ROUTER_MODEL)})`,
+    `Нагадування: щоранку список зустрічей; за ${env.REMINDER_MINUTES} хв — якщо налаштовано частий cron`,
     `Google Calendar: ${connected ? "✅ підключено" : "❌ не підключено"}`,
     `Gmail: ${!connected ? "—" : gmail ? "✅ підключено" : "⚠️ перепідключіть Google і дайте доступ до пошти"}`,
     "",
     "<i>Змінюються змінними розгортання (Vercel → Settings → Environment Variables): OWNER_NAME, OWNER_POSITION, " +
-      "OWNER_PHONE, DEFAULT_DURATION_MIN, DEFAULT_FORMAT, DEFAULT_ADDRESS, LLM_MODEL.</i>",
+      "OWNER_PHONE, DEFAULT_DURATION_MIN, DEFAULT_FORMAT, DEFAULT_ADDRESS, LLM_MODEL, ROUTER_MODEL, REMINDER_MINUTES.</i>",
   ];
   if (gmailPushConfigured(env)) {
     lines.push("", `Адреса push-підписки Pub/Sub для сповіщень про нові листи (секретна, не публікуйте):\n<code>${esc(gmailPushEndpoint(env))}</code>`);
@@ -64,7 +65,10 @@ export function helpText(): string {
   return [
     "<b>Що я вмію</b>",
     "",
+    "💬 Пишіть як завгодно, без команд — я сам зрозумію, чого ви хочете.",
     "📝 Напишіть, надиктуйте голосом, перешліть переписку або скиньте скріншот — я підготую картку зустрічі.",
+    "📅 Питайте про розклад: <i>«що в мене завтра?»</i>, <i>«чи я вільний у пʼятницю о 15?»</i>.",
+    "⏰ Щоранку надсилаю зустрічі на сьогодні.",
     "Наприклад: <i>«зустріч з Іваном Петренком у четвер о 15:00 по бюджету Буковелю»</i>.",
     "✅ Після кнопки «Створити» подія зʼявиться в Google Calendar, а учасники отримають запрошення на пошту.",
     "🔄 Нові, перенесені й скасовані події (зокрема зроблені вручну) я бачу й одразу повідомляю.",

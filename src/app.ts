@@ -180,6 +180,18 @@ async function ownerStarted(env: Env): Promise<boolean> {
 }
 
 /**
+ * GET /api/cron/reminders — Telegram reminders REMINDER_MINUTES before meetings. Needs a frequent schedule (every 5
+ * minutes): a Vercel Pro cron, or any free pinger. Same CRON_SECRET rule as the daily cron.
+ */
+export async function remindersCron(req: Request, env: Env): Promise<Response> {
+  if (env.CRON_SECRET && !safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  await env.jobs.send({ type: "reminders" });
+  return Response.json({ ok: true });
+}
+
+/**
  * GET /api/health — deployment check for the owner or a deploy agent: configuration is fine and the Telegram webhook
  * points here. Never returns secrets.
  */
@@ -308,6 +320,14 @@ Redirect URI налаштовувати не треба.`,
 створіть застосунок <b>Server-to-Server OAuth</b> зі scope ${code("meeting:write:admin")} і додайте ${code("ZOOM_ACCOUNT_ID")}, ${code("ZOOM_CLIENT_ID")}, ${code("ZOOM_CLIENT_SECRET")}.`,
         },
   );
+
+  steps.push({
+    status: "optional",
+    title: `Нагадування за ${env.REMINDER_MINUTES} хв до зустрічі (необовʼязково)`,
+    details: `Ранковий список зустрічей працює й так. Щоб бот нагадував перед кожною зустріччю, адресу
+${code(`${env.PUBLIC_URL}/api/cron/reminders`)} треба викликати кожні 5 хвилин: на Vercel Pro — cron у ${code("vercel.json")},
+безкоштовно — <a href="https://cron-job.org">cron-job.org</a>${env.CRON_SECRET ? ` із заголовком ${code("Authorization: Bearer <CRON_SECRET>")}` : ""}.`,
+  });
 
   const started = await ownerStarted(env);
   const calendar = started && (await hasGoogleAuth(env).catch(() => false));
