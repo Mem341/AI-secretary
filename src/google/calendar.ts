@@ -51,7 +51,15 @@ export interface GChannel {
 
 /** Google Calendar API client for one owner's primary calendar. */
 export class Calendar {
-  constructor(private readonly env: Env) {}
+  private readonly base: string;
+
+  /** The owner's primary calendar, or another calendar of theirs (the bot's own signal calendar, google/signals.ts). */
+  constructor(
+    private readonly env: Env,
+    readonly calendarId = "primary",
+  ) {
+    this.base = `/calendars/${encodeURIComponent(calendarId)}`;
+  }
 
   private async request<T>(path: string, init: RequestInit = {}, retried = false): Promise<T> {
     const token = await getAccessToken(this.env, retried);
@@ -69,19 +77,19 @@ export class Calendar {
 
   insertEvent(event: Record<string, unknown>): Promise<GEvent> {
     // sendUpdates=all: Google emails invitations to every attendee (spec 4.2).
-    return this.request<GEvent>("/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1", {
+    return this.request<GEvent>(`${this.base}/events?sendUpdates=all&conferenceDataVersion=1`, {
       method: "POST",
       body: JSON.stringify(event),
     });
   }
 
   getEvent(eventId: string): Promise<GEvent> {
-    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}`);
+    return this.request<GEvent>(`${this.base}/events/${encodeURIComponent(eventId)}`);
   }
 
   /** Partial update (reschedule, note, attendees); notifies attendees of the change. */
   patchEvent(eventId: string, patch: Record<string, unknown>): Promise<GEvent> {
-    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    return this.request<GEvent>(`${this.base}/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
@@ -92,7 +100,7 @@ export class Calendar {
    * its memory of what it already reported about the event — see google/sync.ts.
    */
   setPrivate(eventId: string, props: Record<string, string>, ifMatch?: string): Promise<GEvent> {
-    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+    return this.request<GEvent>(`${this.base}/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
       method: "PATCH",
       headers: ifMatch ? { "if-match": ifMatch } : {},
       body: JSON.stringify({ extendedProperties: { private: props } }),
@@ -117,15 +125,41 @@ export class Calendar {
 
   /** The owner's own notifications for the event (or a whole recurring series), silently. */
   setReminders(eventId: string, reminders: NonNullable<GEvent["reminders"]>): Promise<GEvent> {
-    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+    return this.request<GEvent>(`${this.base}/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
       method: "PATCH",
       body: JSON.stringify({ reminders }),
     });
   }
 
+  /** A new secondary calendar of the owner's (the bot's signal calendar); returns its id. */
+  async createCalendar(summary: string): Promise<string> {
+    const cal = await this.request<{ id: string }>("/calendars", { method: "POST", body: JSON.stringify({ summary, timeZone: "Europe/Kyiv" }) });
+    return cal.id;
+  }
+
+  /** Creates or replaces an event with a known id, silently (no guests are involved). */
+  async putEvent(event: GEvent & Record<string, unknown>): Promise<GEvent> {
+    try {
+      return await this.request<GEvent>(`${this.base}/events/${encodeURIComponent(event.id)}?sendUpdates=none`, {
+        method: "PUT",
+        body: JSON.stringify(event),
+      });
+    } catch (err) {
+      if (!(err instanceof HttpError && err.status === 404)) throw err;
+      return this.request<GEvent>(`${this.base}/events?sendUpdates=none`, { method: "POST", body: JSON.stringify(event) });
+    }
+  }
+
+  /** Deletes an event without telling anybody (the bot's own signal events). */
+  async deleteSilently(eventId: string): Promise<void> {
+    await this.request<void>(`${this.base}/events/${encodeURIComponent(eventId)}?sendUpdates=none`, { method: "DELETE" }).catch((err) => {
+      if (!(err instanceof HttpError && (err.status === 404 || err.status === 410))) throw err;
+    });
+  }
+
   /** Deletes the event and notifies attendees. */
   async deleteEvent(eventId: string): Promise<void> {
-    await this.request<void>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, { method: "DELETE" });
+    await this.request<void>(`${this.base}/events/${encodeURIComponent(eventId)}?sendUpdates=all`, { method: "DELETE" });
   }
 
   /** Busy intervals of the primary calendar in [timeMin, timeMax]. */
@@ -138,11 +172,11 @@ export class Calendar {
   }
 
   listEvents(params: Record<string, string>): Promise<GEventList> {
-    return this.request<GEventList>(`/calendars/primary/events?${new URLSearchParams(params)}`);
+    return this.request<GEventList>(`${this.base}/events?${new URLSearchParams(params)}`);
   }
 
   watch(channelId: string, token: string, address: string, ttlSeconds: number): Promise<GChannel> {
-    return this.request<GChannel>("/calendars/primary/events/watch", {
+    return this.request<GChannel>(`${this.base}/events/watch`, {
       method: "POST",
       body: JSON.stringify({ id: channelId, type: "web_hook", address, token, params: { ttl: String(ttlSeconds) } }),
     });

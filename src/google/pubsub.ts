@@ -75,10 +75,9 @@ export async function setupGoogleWake(env: Env, first = false): Promise<PushSetu
   const settings = await loadOwnerSettings(env);
   const p = result.ok ? "ok" : result.reason;
   if (settings.p !== p) await saveOwnerSettings(env, { ...settings, p });
-  if (result.ok) {
-    await startGmailWatch(env, first);
-    await applyEmailReminders(env);
-  }
+  if (result.ok) await startGmailWatch(env, first);
+  // Calendar notifications go on either way; Telegram signals only once Google wakes the bot.
+  await applyEmailReminders(env);
   return result;
 }
 

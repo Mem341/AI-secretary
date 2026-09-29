@@ -8,7 +8,6 @@ import { esc, Telegram } from "../telegram/api";
 import { hiddenData } from "../telegram/hidden";
 import type { InlineKeyboard } from "../telegram/types";
 import { Calendar, type GAttendee, type GEvent } from "./calendar";
-import { wakeReady } from "./pubsub";
 import { applyEmailReminders } from "./reminders";
 
 /**
@@ -339,7 +338,7 @@ export async function syncRecent(env: Env, now = Date.now()): Promise<number> {
   let sent = 0;
   for (const ev of page.items) if (await reportChange(env, ev, now)) sent++;
   // A new or moved meeting gets the owner's reminder emails right away (Google then wakes the bot at those minutes).
-  if (await wakeReady(env)) await applyEmailReminders(env, page.items, now).catch(() => 0);
+  await applyEmailReminders(env, page.items, now).catch(() => 0);
   return sent;
 }
 

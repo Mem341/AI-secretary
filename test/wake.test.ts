@@ -106,7 +106,8 @@ describe("Google as the bot's clock (no cron, no outside service)", () => {
         { method: "email", minutes: 30 },
         { method: "email", minutes: 10 },
         { method: "email", minutes: 5 },
-        { method: "popup", minutes: 10 },
+        // No signal calendar yet (older permission): the 5th place goes to a Calendar notification, nearest first.
+        { method: "popup", minutes: 5 },
       ],
     });
   });
@@ -186,5 +187,102 @@ describe("reminder emails in any language of the calendar", () => {
     expect(await handleReminderEmail(env, mail("Нагадування: Стендап @ вт 29 вер. 2026"))).toBe(true);
     expect(await handleReminderEmail(env, mail("Уведомление: Стендап @ вт 29 сент. 2026"))).toBe(true);
     expect(await handleReminderEmail(env, mail("Запрошення: Стендап"))).toBe(false);
+  });
+});
+
+describe("each chosen time: a Telegram message AND a Google Calendar notification", () => {
+  const SIGNAL_SCOPE = `${FULL_SCOPE} https://www.googleapis.com/auth/calendar.app.created`;
+
+  it("the meeting keeps Calendar notifications at all times; its Telegram signals go on a shadow in the bot's own calendar", async () => {
+    await connectGoogle({ scope: SIGNAL_SCOPE });
+    const soon = Date.now() + 3 * 3600_000;
+    const at = (h: number) => new Date(soon + h * 3600_000).toISOString();
+    const primaryPatches: { id: string; reminders: unknown }[] = [];
+    const shadows = new Map<string, Record<string, unknown>>([["aisdead00000000000000000000000", { id: "aisdead00000000000000000000000", extendedProperties: { private: { aisFor: "gone" } } }]]);
+    let created = "";
+    mockFetch([
+      fakePubSub().route,
+      (url, init) => (url.hostname === "gmail.googleapis.com" ? Response.json(url.pathname.endsWith("/labels") ? { labels: [{ id: "L", name: "AI-secretary-seen" }] } : {}) : undefined),
+      (url, init) => {
+        if (url.hostname !== "www.googleapis.com" || !url.pathname.startsWith("/calendar/v3/")) return undefined;
+        const path = decodeURIComponent(url.pathname);
+        if (path === "/calendar/v3/calendars" && init.method === "POST") {
+          created = JSON.parse(init.bodyText).summary;
+          return Response.json({ id: "sig@group.calendar.google.com" });
+        }
+        if (path.startsWith("/calendar/v3/calendars/sig@group.calendar.google.com/events")) {
+          const id = path.split("/").at(-1)!;
+          if (init.method === "PUT") {
+            shadows.set(id, JSON.parse(init.bodyText));
+            return Response.json({ id });
+          }
+          if (init.method === "DELETE") {
+            shadows.delete(id);
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({ items: [...shadows.values()] });
+        }
+        if (init.method === "PATCH") {
+          primaryPatches.push({ id: path.split("/").at(-1)!, reminders: JSON.parse(init.bodyText).reminders });
+          return Response.json({});
+        }
+        return Response.json({ items: [{ id: "one", status: "confirmed", summary: "Планування", start: { dateTime: at(0) }, end: { dateTime: at(1) } }] });
+      },
+    ]);
+    const { env } = testEnv({ GOOGLE_PROJECT_ID: "p1" });
+    await saveOwnerSettings(env, { r: [60, 30, 10, 5] });
+    expect(await setupGoogleWake(env)).toEqual({ ok: true });
+
+    expect(created).toBe("AI-secretary · сигнали");
+    // The meeting: Calendar notifications at every chosen time.
+    expect(primaryPatches).toEqual([
+      { id: "one", reminders: { useDefault: false, overrides: [60, 30, 10, 5].map((minutes) => ({ method: "popup", minutes })) } },
+    ]);
+    // Its shadow: the email signals that wake the bot for Telegram, at the same times; the stale shadow is gone.
+    const { shadowId } = await import("../src/google/signals");
+    expect([...shadows.keys()]).toEqual([shadowId("one")]);
+    expect(shadows.get(shadowId("one"))).toMatchObject({
+      summary: "🔔 Планування",
+      transparency: "transparent",
+      visibility: "private",
+      reminders: { useDefault: false, overrides: [60, 30, 10, 5].map((minutes) => ({ method: "email", minutes })) },
+      extendedProperties: { private: { aisFor: "one" } },
+    });
+  });
+});
+
+describe("a signal from the bot's calendar", () => {
+  it("becomes the reminder of the owner's meeting it shadows", async () => {
+    await connectGoogle({ scope: FULL_SCOPE });
+    const { shadowId } = await import("../src/google/signals");
+    const { handleReminderEmail } = await import("../src/google/reminders");
+    const sid = shadowId("meet1");
+    const start = Date.now() + 10 * MIN;
+    const calls = mockFetch([
+      (url) => (url.hostname === "gmail.googleapis.com" ? Response.json({}) : undefined),
+      (url, init) => {
+        if (url.hostname !== "www.googleapis.com") return undefined;
+        const path = decodeURIComponent(url.pathname);
+        if (path.endsWith(`/sig@x/events/${sid}`)) return Response.json({ id: sid, extendedProperties: { private: { aisFor: "meet1" } } });
+        if (path.endsWith("/primary/events/meet1") && (init.method ?? "GET") === "GET")
+          return Response.json({ id: "meet1", status: "confirmed", summary: "Стендап", start: { dateTime: new Date(start).toISOString() }, end: { dateTime: new Date(start + 30 * MIN).toISOString() } });
+        return Response.json({});
+      },
+    ]);
+    const { env } = testEnv();
+    await saveOwnerSettings(env, { r: [30, 10], sc: "sig@x" });
+    const email = {
+      id: "m",
+      threadId: "t",
+      payload: {
+        headers: [
+          { name: "From", value: "Google Calendar <calendar-notification@google.com>" },
+          { name: "Subject", value: "Нагадування: 🔔 Стендап @ вт 29 вер. 2026" },
+        ],
+        body: { data: Buffer.from(`https://calendar.google.com/calendar/event?action=VIEW&eid=${Buffer.from(`${sid} sig@x`).toString("base64url")}`).toString("base64url") },
+      },
+    } as never;
+    expect(await handleReminderEmail(env, email)).toBe(true);
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Через 10 хв:</b> Стендап");
   });
 });

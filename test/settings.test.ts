@@ -46,7 +46,7 @@ describe("/settings in Telegram", () => {
     const settingsMsg = [...tg.messages.values()].at(-1)!;
 
     await handleUpdate(env, press("set:rem", settingsMsg));
-    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("Коли нагадувати про зустріч?");
+    expect(String(tgCalls(calls, "editMessageText").at(-1)!.text)).toContain("Нагадування про зустрічі");
 
     await handleUpdate(env, press("set:r:10", settingsMsg)); // off
     await handleUpdate(env, press("set:r:60", settingsMsg)); // on
