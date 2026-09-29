@@ -91,6 +91,9 @@ ${stepsList([
     title: "Увійдіть у Google",
     details: `Оберіть акаунт і дозвольте доступ до календаря та пошти (поставте всі галочки).
 Якщо Google попередить «застосунок не перевірено» — натисніть <b>Додатково</b> → <b>Перейти</b>: це ваш власний бот.<br>
+Якщо Google пише <b>«Доступ заблоковано… застосунок тестується»</b> (помилка 403 access_denied) — у Google Cloud відкрийте
+<a href="https://console.cloud.google.com/auth/audience">Google Auth Platform → Audience</a> і натисніть <b>Publish app</b>
+(або додайте свою пошту в <b>Test users</b>), потім спробуйте ще раз.<br>
 <a class="button" href="${esc(googleAuthUrl(env, state))}">Увійти через Google</a>`,
   },
   {
