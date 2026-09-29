@@ -26,6 +26,20 @@ export const GOOGLE_SCOPES = [
 ];
 const STATE_TTL_MS = 30 * 60_000;
 
+/**
+ * The permissions beyond the calendar, as Google's consent screen words them — it shows each as its own checkbox,
+ * unticked. Returns those missing from a granted scope string.
+ */
+export function missingScopes(scope: string): string[] {
+  const all: [string, string][] = [
+    ["gmail.modify", "пошта — «Читати, створювати, надсилати й видаляти листи Gmail» (Read, compose, and send emails)"],
+    ["pubsub", "сигнали — «Pub/Sub» (View and manage Pub/Sub topics and subscriptions)"],
+    ["calendar.app.created", "календар сигналів — «Створювати додаткові календарі» (Make secondary Google calendars…)"],
+    ["drive.appdata", "памʼять — «Дані застосунку на Диску» (See, create, and delete its own configuration data in your Google Drive)"],
+  ];
+  return all.filter(([s]) => !scope.includes(s)).map(([, text]) => text);
+}
+
 /** Thrown when the refresh token no longer works; the owner must reconnect Google. */
 export class GoogleAuthRevokedError extends Error {
   constructor() {

@@ -295,9 +295,9 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
     const { reportWake } = await import("../src/google/wake");
     await reportWake(env, env.OWNER_TELEGRAM_ID);
     const msg = tgCalls(calls, "sendMessage").at(-1)!;
-    expect(String(msg.text)).toContain("бракує");
+    expect(String(msg.text)).toContain("не поставлено галочки");
     expect(String(msg.text)).toContain("Pub/Sub");
-    expect(JSON.stringify(msg.reply_markup)).toContain("Перепідключити Google");
+    expect(JSON.stringify(msg.reply_markup)).toContain("з усіма галочками");
   });
 
   it("all set: creates the test signal; Google's email for it comes back as «✅ Тест пройдено»", async () => {
@@ -337,7 +337,7 @@ describe("«🔁 Перевірити»: every link of the chain, then a real te
     const report = String(tgCalls(calls, "sendMessage").at(-1)!.text);
     expect(report).toContain("✅ <b>Pub/Sub");
     expect(report).toContain("Тест запущено");
-    const [[sid, test]] = [...shadows.entries()];
+    const [sid, test] = [...shadows.entries()][0]!;
     expect(test).toMatchObject({ status: "confirmed", reminders: { overrides: [{ method: "email", minutes: 3 }] } });
 
     const { handleReminderEmail } = await import("../src/google/reminders");

@@ -5,7 +5,7 @@ import type { InlineKeyboard } from "../telegram/types";
 import { Calendar } from "./calendar";
 import { Gmail } from "./gmail";
 import { seenLabel, startGmailWatch } from "./gmailPush";
-import { connectLink, loadGrant, loadOwnerSettings, saveOwnerSettings } from "./oauth";
+import { connectLink, loadGrant, loadOwnerSettings, missingScopes, saveOwnerSettings } from "./oauth";
 import { ensureGmailPush, type PushSetup, pubsubApiLink, setupGoogleWake } from "./pubsub";
 import { applyEmailReminders } from "./reminders";
 import { signalCalendar, TEST_PREFIX, shadowId } from "./signals";
@@ -71,16 +71,16 @@ export async function reportWake(env: Env, chatId: number, now = Date.now()): Pr
     keyboard.push([{ text: "🔗 Підключити Google", url: await connectLink(env) }]);
     return void (await send());
   }
-  const has = (s: string) => grant.scope.includes(s);
-  const missing = [
-    !has("gmail.modify") && "пошта",
-    !has("pubsub") && "сигнали від Google (Pub/Sub)",
-    !has("calendar.app.created") && "календар сигналів",
-  ].filter(Boolean);
-  lines.push(missing.length ? `❌ <b>Дозволи Google:</b> бракує — ${missing.join(", ")}.` : `✅ <b>Дозволи Google</b>${grant.email ? ` (${esc(grant.email)})` : ""}`);
+  // Memory (Drive) is not part of reminders.
+  const missing = missingScopes(grant.scope).filter((m) => !m.startsWith("памʼять"));
+  lines.push(missing.length ? "❌ <b>Дозволи Google:</b> на екрані Google не поставлено галочки:" : `✅ <b>Дозволи Google</b>${grant.email ? ` (${esc(grant.email)})` : ""}`);
   if (missing.length) {
-    lines.push("", "Одного «Enable» у Google Cloud мало: перепідключіть Google й поставте всі галочки, потім «Перевірити ще раз».");
-    keyboard.push([{ text: "🔄 Перепідключити Google", url: await connectLink(env) }], retry);
+    lines.push(...missing.map((m) => `• ${esc(m)}`));
+    lines.push(
+      "",
+      "Google показує кожен дозвіл окремою галочкою, і нові стоять <b>невідмічені</b>. Натисніть кнопку → оберіть акаунт → на екрані з дозволами поставте <b>«Вибрати все» (Select all)</b> → «Продовжити». Потім «Перевірити ще раз».",
+    );
+    keyboard.push([{ text: "🔄 Підключити з усіма галочками", url: await connectLink(env) }], retry);
     return void (await send());
   }
 
