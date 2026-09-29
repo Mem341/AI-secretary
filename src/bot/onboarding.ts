@@ -43,7 +43,7 @@ export async function showSettings(env: Env, user: User): Promise<void> {
     "Формат за замовчуванням: Google Meet (Zoom — якщо попросите)",
     `Модель Supervisor: ${esc(env.LLM_MODEL)}`,
     `Модель агентів (календар, пошта): ${esc(env.AGENT_MODEL)}`,
-    `Нагадування: щоранку список зустрічей; за ${env.REMINDER_MINUTES} хв — якщо налаштовано частий cron`,
+    `Нагадування: щоранку список зустрічей; за ${env.REMINDER_MINUTES.join(" і ")} хв до зустрічі — якщо налаштовано cron-job.org (/api/cron/reminders)`,
     `Google Calendar: ${connected ? "✅ підключено" : "❌ не підключено"}`,
     `Gmail: ${!connected ? "—" : gmail ? "✅ підключено" : "⚠️ перепідключіть Google і дайте доступ до пошти"}`,
     "",

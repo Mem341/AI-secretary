@@ -20,7 +20,7 @@ export const testConfig: Config = {
   AGENT_MODEL: "test/agent-model",
   LLM_MODEL_SUMMARY: "test/summary-model",
   STT_MODEL: "test/audio-model",
-  REMINDER_MINUTES: 30,
+  REMINDER_MINUTES: [30, 10],
   TELEGRAM_BOT_TOKEN: "tg-token",
   TELEGRAM_WEBHOOK_SECRET: "tg-secret",
   GOOGLE_CLIENT_ID: "gid",

@@ -180,8 +180,8 @@ async function ownerStarted(env: Env): Promise<boolean> {
 }
 
 /**
- * GET /api/cron/reminders — Telegram reminders REMINDER_MINUTES before meetings. Needs a frequent schedule (every 5
- * minutes): a Vercel Pro cron, or any free pinger. Same CRON_SECRET rule as the daily cron.
+ * GET /api/cron/reminders — Telegram reminders REMINDER_MINUTES (30 and 10) before meetings, no AI involved. Needs a
+ * call every 5 minutes: a free pinger (cron-job.org) or a Vercel Pro cron. Same CRON_SECRET rule as the daily cron.
  */
 export async function remindersCron(req: Request, env: Env): Promise<Response> {
   if (env.CRON_SECRET && !safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
@@ -321,10 +321,11 @@ Redirect URI налаштовувати не треба.`,
 
   steps.push({
     status: "optional",
-    title: `Нагадування за ${env.REMINDER_MINUTES} хв до зустрічі (необовʼязково)`,
-    details: `Ранковий список зустрічей працює й так. Щоб бот нагадував перед кожною зустріччю, адресу
-${code(`${env.PUBLIC_URL}/api/cron/reminders`)} треба викликати кожні 5 хвилин: на Vercel Pro — cron у ${code("vercel.json")},
-безкоштовно — <a href="https://cron-job.org">cron-job.org</a>${env.CRON_SECRET ? ` із заголовком ${code("Authorization: Bearer <CRON_SECRET>")}` : ""}.`,
+    title: `Нагадування за ${env.REMINDER_MINUTES.join(" і ")} хв до зустрічі (необовʼязково)`,
+    details: `Ранковий список зустрічей працює й так. Щоб бот нагадував перед кожною зустріччю (без ШІ, просто з календаря),
+адресу ${code(`${env.PUBLIC_URL}/api/cron/reminders`)} треба викликати кожні 5 хвилин. Безкоштовно:
+<a href="https://cron-job.org">cron-job.org</a> → Sign up → <b>Create cronjob</b> → URL — адреса вище, Schedule — <b>Every 5 minutes</b>${env.CRON_SECRET ? `,
+у вкладці Advanced додайте заголовок ${code("Authorization: Bearer <CRON_SECRET>")}` : ""} → Create. На Vercel Pro замість цього можна додати cron у ${code("vercel.json")}.`,
   });
 
   const started = await ownerStarted(env);
