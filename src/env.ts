@@ -64,7 +64,7 @@ export interface Env extends Config {
   jobs: JobQueue;
 }
 
-export const DEFAULT_LLM_MODEL = "openai/gpt-5-mini";
+export const DEFAULT_LLM_MODEL = "openai/gpt-6-luna-pro";
 export const DEFAULT_ROUTER_MODEL = "openai/gpt-5-nano";
 export const DEFAULT_LLM_MODEL_SUMMARY = "anthropic/claude-sonnet-4.5";
 // OpenAI models on OpenRouter take audio only as wav/mp3; Telegram voice notes are OGG/Opus, which Gemini accepts.
