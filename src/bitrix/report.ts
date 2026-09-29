@@ -15,6 +15,18 @@ const MAX_TASKS = 150;
 /** Tasks summarised by AI per model call; the calls run in parallel. */
 const AI_CHUNK = 12;
 
+/** What the Excel report can hold — the owner picks it in /bitrix → «📊 Excel-звіт». */
+export const REPORT_SCOPES = {
+  all: "🗂 Усе: відкриті й закриті за 30 днів",
+  open: "📋 Лише відкриті",
+  overdue: "🔥 Прострочені",
+  week: "⏳ Дедлайн цього тижня",
+  mine: "👤 Де я відповідальний",
+  given: "📤 Які я поставив",
+  closed: "✅ Закриті за 30 днів",
+} as const;
+export type ReportScope = keyof typeof REPORT_SCOPES;
+
 export interface TaskReport {
   file: Uint8Array;
   filename: string;
@@ -55,14 +67,30 @@ async function statusFromComments(env: Env, tasks: BxTask[], comments: Record<st
   return Object.assign({}, ...results);
 }
 
-export async function buildTaskReport(env: Env, now = Date.now()): Promise<TaskReport> {
+const OPEN = ["1", "2", "3", "4", "6"];
+
+/** The report of the chosen tasks; null when there are none. */
+export async function buildTaskReport(env: Env, now = Date.now(), scope: ReportScope = "all"): Promise<TaskReport | null> {
   const bx = new Bitrix(env);
   const me = await bx.me();
-  const active = await bx.tasks({ MEMBER: me.id, REAL_STATUS: ["1", "2", "3", "4", "6"] }, MAX_TASKS);
-  const closed = await bx.tasks({ MEMBER: me.id, REAL_STATUS: ["5"], ">=CLOSED_DATE": new Date(now - 30 * 86_400_000).toISOString() }, 50, {
-    CLOSED_DATE: "desc",
-  });
+  const iso = (t: number) => new Date(t).toISOString();
+  const openFilter: Record<string, unknown> =
+    scope === "mine"
+      ? { RESPONSIBLE_ID: me.id, REAL_STATUS: OPEN }
+      : scope === "given"
+        ? { CREATED_BY: me.id, REAL_STATUS: OPEN }
+        : scope === "overdue"
+          ? { MEMBER: me.id, REAL_STATUS: OPEN, "<DEADLINE": iso(now) }
+          : scope === "week"
+            ? { MEMBER: me.id, REAL_STATUS: OPEN, ">=DEADLINE": iso(now), "<DEADLINE": iso(now + 7 * 86_400_000) }
+            : { MEMBER: me.id, REAL_STATUS: OPEN };
+  const active = scope === "closed" ? [] : await bx.tasks(openFilter, MAX_TASKS);
+  const closed =
+    scope === "all" || scope === "closed"
+      ? await bx.tasks({ MEMBER: me.id, REAL_STATUS: ["5"], ">=CLOSED_DATE": iso(now - 30 * 86_400_000) }, 50, { CLOSED_DATE: "desc" })
+      : [];
   const tasks = [...active, ...closed];
+  if (!tasks.length) return null;
   const comments = tasks.length ? await bx.commentsOf(tasks.map((t) => t.id)) : {};
   const stages: Record<string, Record<string, string>> = {};
   for (const g of [...new Set(tasks.filter((t) => t.stageId && t.stageId !== "0").map((t) => t.groupId ?? "0"))].slice(0, 20)) {
@@ -140,9 +168,9 @@ export async function buildTaskReport(env: Env, now = Date.now()): Promise<TaskR
   ]);
   return {
     file,
-    filename: `zadachi-${toKyivDate(new Date(now))}.xlsx`,
+    filename: `zadachi-${scope === "all" ? "" : `${scope}-`}${toKyivDate(new Date(now))}.xlsx`,
     caption:
-      `📊 <b>Звіт по задачах Bitrix24</b>\n\n` +
+      `📊 <b>Звіт по задачах Bitrix24</b>\n${REPORT_SCOPES[scope]}\n\n` +
       `📋 Відкрито: <b>${openTasks.length}</b> · 🔥 прострочено: <b>${overdueCount}</b>\n` +
       `✅ Закрито за 30 днів: <b>${closed.length}</b>${avg !== "" ? ` · ⏱ в середньому ${avg} дн.` : ""}\n\n` +
       `<i>Прострочені задачі підсвічено червоним. «Стан за коментарями» — коротко з переписки в задачі.</i>`,

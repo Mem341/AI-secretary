@@ -3,7 +3,7 @@ import { helpText, sendConnectGoogle, startOnboarding } from "../bot/onboarding"
 import { handleConnectAnswer } from "../bot/connect";
 import { handleSettingsButton, showSettings } from "../bot/settings";
 import { applyIntegrations } from "../integrations";
-import { type BitrixAction, showBitrixMenu } from "../bitrix/menu";
+import { type BitrixAction, showBitrixMenu, showReportMenu } from "../bitrix/menu";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { connectWithCode } from "../google/connect";
@@ -163,9 +163,14 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   if (!user) return;
   await applyIntegrations(env);
   const chatId = cq.message?.chat.id ?? user.tg_id;
-  const bx = /^bx:(my|overdue|stats|report)$/.exec(cq.data ?? "");
+  if (cq.data === "bx:report") {
+    await new Telegram(env).answerCallback(cq.id).catch(() => undefined);
+    await showReportMenu(env, chatId);
+    return;
+  }
+  const bx = /^bx:(my|overdue|stats|report:(?:all|open|overdue|week|mine|given|closed))$/.exec(cq.data ?? "");
   if (bx) {
-    await new Telegram(env).answerCallback(cq.id, bx[1] === "report" ? "Готую звіт…" : undefined).catch(() => undefined);
+    await new Telegram(env).answerCallback(cq.id, bx[1]!.startsWith("report:") ? "Готую звіт…" : undefined).catch(() => undefined);
     await env.jobs.send({ type: "bitrix", chatId, action: bx[1] as BitrixAction });
     return;
   }

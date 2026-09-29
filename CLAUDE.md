@@ -38,7 +38,7 @@ webhook and redirects to the bot; `/api/health` shows the state.
 - `src/bitrix/` — optional Bitrix24 tasks via an incoming webhook (`BITRIX_WEBHOOK_URL`, rights: tasks, user, im): `client.ts` (REST; a task's discussion is its «Чат завдання» (im chat, `im.chat.get` by entity) plus old comments; tasks
   are only read, commented and created — never closed, changed or deleted; keep it that way), `names.ts` (people by
   name in any case form / alphabet), `report.ts` (Excel: tasks, stage, status, state from comments by AI, analytics),
-  `menu.ts` (/bitrix buttons `bx:…`, no AI). The `bitrix_agent` (`agent/bitrixTools.ts`, `bitrixPrompt`) joins the
+  `menu.ts` (/bitrix buttons `bx:…`, no AI; «📊 Excel-звіт» first asks what to export, `REPORT_SCOPES`). The `bitrix_agent` (`agent/bitrixTools.ts`, `bitrixPrompt`) joins the
   Supervisor and `route.ts` when it is configured. `lib/xlsx.ts` writes .xlsx without dependencies.
 - `src/bot/` — `onboarding.ts` (/start, /help), `settings.ts` (/settings: what is connected, reminder times and the
   morning list chosen with `set:…` buttons, no AI), `owner.ts` (profile from Telegram/Google/env),

@@ -174,10 +174,36 @@ describe("/bitrix menu and the Excel report", () => {
     expect(text).toContain("https://acme.bitrix24.ua/company/personal/user/1/tasks/task/view/123/");
   });
 
+  it("«📊 Excel-звіт» first asks what to export; each choice becomes the matching Bitrix24 filter", async () => {
+    const lists: Record<string, unknown>[] = [];
+    const route = bitrixRoute();
+    const calls = mockFetch([
+      (url, init) => {
+        if (url.href.includes("tasks.task.list")) lists.push(JSON.parse(init.bodyText || "{}").filter ?? {});
+        return route(url, init);
+      },
+      openRouter(() => llmText("{}")),
+    ]);
+    const { env, jobs } = testEnv({ BITRIX_WEBHOOK_URL: WEBHOOK });
+    const press = (data: string): TgUpdate => ({ update_id: 9, callback_query: { id: "c", from: { id: OWNER, is_bot: false, first_name: "О" }, data } });
+    await handleUpdate(env, press("bx:report"));
+    const menu = tgCalls(calls, "sendMessage").at(-1)!;
+    expect(String(menu.text)).toContain("Що вивантажити в Excel?");
+    expect((menu.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard.flat().map((b) => b.callback_data)).toEqual([
+      "bx:report:all", "bx:report:open", "bx:report:overdue", "bx:report:week", "bx:report:mine", "bx:report:given", "bx:report:closed",
+    ]);
+    expect(jobs.length).toBe(0);
+
+    await handleUpdate(env, press("bx:report:mine"));
+    await runJobs(env, jobs);
+    expect(lists.at(-1)).toMatchObject({ RESPONSIBLE_ID: 1 });
+    expect(calls.some((c) => c.url.endsWith("/sendDocument"))).toBe(true);
+  });
+
   it("the report: tasks, stage, status, state from comments (AI), people, dates; overdue highlighted", async () => {
     mockFetch([bitrixRoute(), openRouter(() => llmText(JSON.stringify({ "123": "Іван чекає цифри від бухгалтерії" })))]);
     const { env } = testEnv({ BITRIX_WEBHOOK_URL: WEBHOOK });
-    const report = await buildTaskReport(env);
+    const report = (await buildTaskReport(env))!;
     expect(report.filename).toMatch(/^zadachi-\d{4}-\d{2}-\d{2}\.xlsx$/);
     expect(report.caption).toContain("Відкрито: <b>2</b>");
     expect(report.caption).toContain("прострочено: <b>1</b>");
