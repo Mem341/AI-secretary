@@ -1,3 +1,4 @@
+import { reminderMarks } from "../bot/settings";
 import type { Env } from "../env";
 import { DAY, formatRange, kyivLocalToDate, kyivParts, MINUTE } from "../lib/time";
 import { firstTime } from "../session";
@@ -41,8 +42,11 @@ export function dueReminder(marks: number[], left: number, lastSent: number | nu
  * stored: a reminded event gets a private property.
  */
 export async function sendReminders(env: Env, now = Date.now()): Promise<number> {
+  // The owner's choice from /settings, else REMINDER_MINUTES.
+  const marks = await reminderMarks(env);
+  if (!marks.length) return 0;
   const cal = new Calendar(env);
-  const window = Math.max(...env.REMINDER_MINUTES) * MINUTE + EARLY;
+  const window = Math.max(...marks) * MINUTE + EARLY;
   const page = await cal.listEvents({
     singleEvents: "true",
     orderBy: "startTime",
@@ -60,8 +64,8 @@ export async function sendReminders(env: Env, now = Date.now()): Promise<number>
     const props = ev.extendedProperties?.private ?? {};
     const [sentFor, sentMark] = (props[PROP_REMINDED] ?? "").split(":");
     // Before marks existed the property held the start only: that reminder counts as the first (largest) mark.
-    const lastSent = sentFor === String(m.start_at) ? Number(sentMark ?? Math.max(...env.REMINDER_MINUTES)) : null;
-    const mark = dueReminder(env.REMINDER_MINUTES, m.start_at - now, lastSent);
+    const lastSent = sentFor === String(m.start_at) ? Number(sentMark ?? Math.max(...marks)) : null;
+    const mark = dueReminder(marks, m.start_at - now, lastSent);
     if (mark === null || !firstTime(`remind:${ev.id}:${m.start_at}:${mark}`, DAY)) continue;
     const minutes = Math.max(1, Math.round((m.start_at - now) / MINUTE));
     const lines = [`⏰ <b>Через ${minutes} хв:</b> ${esc(m.title ?? "зустріч")}`, esc(formatRange(new Date(m.start_at), new Date(m.end_at)))];

@@ -127,8 +127,12 @@ class FakeTelegram {
     switch (method) {
       case "sendMessage":
         return this.message(String(body.text));
-      case "editMessageText":
-        return this.message(String(body.text), Number(body.message_id));
+      case "editMessageText": {
+        const edited = this.message(String(body.text), Number(body.message_id));
+        // Telegram returns the edited text in getChat.pinned_message too.
+        if (this.pinned?.message_id === edited.message_id) this.pinned = edited;
+        return edited;
+      }
       case "pinChatMessage":
         this.pinned = this.messages.get(Number(body.message_id)) ?? null;
         return true;

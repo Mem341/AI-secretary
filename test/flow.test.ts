@@ -158,7 +158,7 @@ describe("Google connection lives in one pinned message", () => {
 });
 
 describe("agents (the n8n «AI Agent ALL» flow)", () => {
-  it("text → Supervisor → calendar_agent (with its tools) → the agent's answer goes to the chat as HTML", async () => {
+  it("an obvious calendar request goes straight to the Calendar Agent (no Supervisor call) and its answer to the chat", async () => {
     await connectGoogle();
     const seen: LlmRequest[] = [];
     let listed = false;
@@ -182,17 +182,35 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     expect(jobs.map((j) => j.body.type)).toEqual(["agent"]);
     await runJobs(env, jobs);
 
-    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/agent-model", "test/agent-model", "test/supervisor-model"]);
-    // Supervisor: n8n "Build Agent Context"; its tools are the two agents (+ think).
-    expect(lastContent(seen[0]!)).toContain("USER: що в мене сьогодні?");
-    expect(lastContent(seen[0]!)).toContain("---SESSION---");
-    expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent", "think"]);
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model", "test/agent-model"]);
     // The Calendar Agent gets the user's message without the session block, and the calendar tools.
-    expect(lastContent(seen[1]!)).toBe("що в мене сьогодні?");
-    expect(seen[1]!.tools!.map((t) => t.function.name)).toContain("create_event_google_meet");
-    expect(String(seen[1]!.messages[0]!.content)).toContain("o.kovalenko@acme.ua");
+    expect(lastContent(seen[0]!)).toBe("що в мене сьогодні?");
+    expect(seen[0]!.tools!.map((t) => t.function.name)).toContain("create_event_google_meet");
+    expect(String(seen[0]!.messages[0]!.content)).toContain("o.kovalenko@acme.ua");
     expect(listed).toBe(true);
     expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("📅 <b>Розклад на сьогодні:</b>\n\nЗустрічей немає");
+  });
+
+  it("an unclear request (both topics) goes to the Supervisor, which calls the agents as tools (no Think)", async () => {
+    await connectGoogle();
+    const seen: LlmRequest[] = [];
+    mockFetch([
+      calendarList([]),
+      openRouter((req) => {
+        if (req.model === "test/supervisor-model") {
+          return req.messages.at(-1)!.role === "tool" ? llmText(lastContent(req)) : llmTools(["calendar_agent", { prompt: lastContent(req) }]);
+        }
+        return llmText("Готово");
+      }, seen),
+    ]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, textUpdate(OWNER, "перенеси зустріч з Іваном і напиши йому лист"));
+    await runJobs(env, jobs);
+    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/agent-model", "test/supervisor-model"]);
+    expect(lastContent(seen[0]!)).toContain("USER: перенеси зустріч з Іваном і напиши йому лист");
+    expect(lastContent(seen[0]!)).toContain("---SESSION---");
+    expect(seen[0]!.tools!.map((t) => t.function.name)).toEqual(["calendar_agent", "gmail_agent"]);
+    expect(lastContent(seen[1]!)).toBe("перенеси зустріч з Іваном і напиши йому лист");
   });
 
   it("create_event_google_meet: Meet link, 10-minute popup, guests cannot edit, silent for the calendar notices", async () => {
@@ -242,7 +260,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     expect(lastBotMessage("Зустріч створена")).toBeTruthy();
   });
 
-  it("✅ Прийняти under an invitation: accept:{id} → rsvp_event keeps the other guests; the buttons are removed", async () => {
+  it("✅ Прийняти under an invitation: answered in code (no AI) — rsvp keeps the other guests; the buttons are removed", async () => {
     await connectGoogle();
     const invitation = tg.message(hiddenData({ k: "ev", id: "ev7" }) + "📅 <b>Запрошення на зустріч</b>\n\n📌 <b>Демо</b>");
     let patched: { attendees: { email: string; responseStatus?: string }[] } | undefined;
@@ -275,9 +293,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     await handleUpdate(env, callbackUpdate(OWNER, "accept:ev7", invitation));
     await runJobs(env, jobs);
 
-    expect(lastContent(seen[0]!)).toContain("USER: [Кнопка: accept:ev7]");
-    expect(lastContent(seen[0]!)).toContain("callbackData: accept:ev7");
-    expect(lastContent(seen[0]!)).toContain("[eventId: ev7]");
+    expect(seen).toEqual([]);
     expect(patched!.attendees.map((a) => [a.email, a.responseStatus])).toEqual([
       ["boss@partner.ua", "accepted"],
       ["o.kovalenko@acme.ua", "accepted"],
@@ -292,14 +308,16 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     await connectGoogle();
     const notice = tg.message(hiddenData({ k: "ev", id: "ev9" }) + "🔄 <b>Подію перенесено в календарі</b>\n\n<b>Стендап</b>");
     const seen: LlmRequest[] = [];
-    mockFetch([openRouter(() => llmText("Добре"), seen)]);
+    mockFetch([calendarList([]), openRouter(() => llmText("Добре"), seen)]);
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "скасуй", { reply_to_message: notice }));
     await runJobs(env, jobs);
     const input = lastContent(seen[0]!);
     expect(input.startsWith("---REPLY_TO_BOT_MESSAGE---\n")).toBe(true);
     expect(input).toContain("Стендап");
-    expect(input).toContain("\n[eventId: ev9]\n---END_REPLY---\n\nUSER: скасуй");
+    expect(input).toContain("\n[eventId: ev9]\n---END_REPLY---\n\nскасуй");
+    // The event id alone decides: straight to the Calendar Agent.
+    expect(seen.map((r) => r.model)).toEqual(["test/agent-model"]);
   });
 
   it("remembers the conversation within the instance (n8n chat memory); /reset forgets it", async () => {
@@ -329,7 +347,7 @@ describe("agents (the n8n «AI Agent ALL» flow)", () => {
     const { env, jobs } = testEnv();
     await handleUpdate(env, textUpdate(OWNER, "зустріч з Олегом завтра"));
     await runJobs(env, jobs);
-    expect(seen.map((r) => r.model)).toEqual(["test/supervisor-model", "test/supervisor-model"]);
+    expect(seen).toEqual([]);
     expect(lastBotMessage("Google не підключено")).toBeTruthy();
   });
 
@@ -407,7 +425,7 @@ describe("voice", () => {
         const body = JSON.parse(init.bodyText);
         if (body.model !== "test/audio-model") return undefined;
         audio = body.messages[0].content.find((p: { type: string }) => p.type === "input_audio").input_audio;
-        return Response.json({ choices: [{ message: { content: " зустріч з Іваном завтра о 10 \n" } }] });
+        return Response.json({ choices: [{ message: { content: " привіт, як справи \n" } }] });
       },
       openRouter(() => llmText("ok"), seen),
     ]);
@@ -416,8 +434,8 @@ describe("voice", () => {
     expect(jobs.map((j) => j.body.type)).toEqual(["voice"]);
     await runJobs(env, jobs);
     expect(audio).toEqual({ data: Buffer.from([1, 2, 3]).toString("base64"), format: "ogg" });
-    expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>зустріч з Іваном завтра о 10</i>"))).toBe(true);
-    expect(lastContent(seen[0]!)).toContain("USER: зустріч з Іваном завтра о 10");
+    expect(tgCalls(calls, "sendMessage").some((m) => String(m.text).includes("🎙 <i>привіт, як справи</i>"))).toBe(true);
+    expect(lastContent(seen[0]!)).toContain("USER: привіт, як справи");
     expect(lastContent(seen[0]!)).toContain("inputType: voice");
   });
 });

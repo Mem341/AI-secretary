@@ -53,18 +53,6 @@ export async function runAgent(env: Env, run: AgentRun): Promise<string> {
   return last || "Не вдалося завершити запит — спробуйте сформулювати простіше.";
 }
 
-/** n8n "Think" tool: lets the model write down its reasoning; changes nothing. */
-export const thinkTool: Tool = {
-  spec: {
-    name: "think",
-    description: "Use the tool to think about something. It will not obtain new information or change anything, just append the thought to the log.",
-    parameters: { type: "object", properties: { thought: { type: "string", description: "A thought to think about." } }, required: ["thought"] },
-  },
-  async run() {
-    return "ok";
-  },
-};
-
 /** A string argument, or "" (models sometimes omit optional ones). */
 export function str(args: Record<string, unknown>, key: string): string {
   const v = args[key];
