@@ -55,8 +55,10 @@ webhook and redirects to the bot; `/api/health` shows the state.
 ## Where state lives (there is no database)
 
 - Google grant: encrypted in ONE pinned message of the owner's chat (`loadGrant` reads it via getChat). The owner's
-  /settings choices (`OwnerSettings`: reminder minutes, morning list) sit unencrypted in the same message's hidden
-  data; saving edits that message in place.
+  /settings choices (`OwnerSettings`: reminder minutes, morning list) sit unencrypted, and Bitrix24 / Zoom keys the
+  owner gave in /settings (`Integrations`, `bot/connect.ts`) sit encrypted, in the same message's hidden data; saving
+  edits that message in place (or sends and pins it when Google is not connected yet). `integrations.ts` fills
+  `env` from them at the start of every update and job, unless a deployment variable is set.
 - "Which meeting/email is this reply about": hidden in the bot's own notices (`hiddenData` / `readHidden`) and
   passed to the agents as `[eventId: …]` / `[messageId: …]` in the reply context. Other hidden data likewise lives
   in the bot's own messages; Telegram returns it with button presses and replies. Keep it under

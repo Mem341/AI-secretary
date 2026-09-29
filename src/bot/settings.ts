@@ -3,6 +3,8 @@ import { gmailPushEndpoint } from "../google/gmailPush";
 import { connectLink, hasGmailScope, hasGoogleAuth, loadOwnerSettings, type OwnerSettings, saveOwnerSettings } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
+import { integrationSource } from "../integrations";
+import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
 import type { User } from "./owner";
 
 /**
@@ -49,8 +51,8 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   else available.push(line(false, "Gmail — пошта (разом із Google)"));
   connected.push(line(true, "Голосові повідомлення"));
   (gmailPushConfigured(env) ? connected : available).push(line(gmailPushConfigured(env), "Миттєві сповіщення про нові листи"));
-  (zoomConfigured(env) ? connected : available).push(line(zoomConfigured(env), "Zoom — зустрічі в Zoom"));
   (bitrixConfigured(env) ? connected : available).push(line(bitrixConfigured(env), "Bitrix24 — задачі (/bitrix)"));
+  (zoomConfigured(env) ? connected : available).push(line(zoomConfigured(env), "Zoom — зустрічі в Zoom"));
 
   const html = [
     "⚙️ <b>Налаштування</b>",
@@ -75,6 +77,15 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
     ]);
   }
   keyboard.push([{ text: google ? "🔄 Перепідключити Google" : "🔗 Підключити Google", url: await connectLink(env) }]);
+  // Bitrix24 and Zoom: connected right here (the bot asks for the key); set by a deployment variable — nothing to do.
+  const integrationButtons = (["bitrix", "zoom"] as Integration[]).flatMap((w) => {
+    const source = integrationSource(env, w);
+    if (source === "variable") return [];
+    return source === "settings"
+      ? [{ text: `❌ Відключити ${INTEGRATION_NAMES[w]}`, callback_data: `set:off:${w}` }]
+      : [{ text: `🔗 Підключити ${INTEGRATION_NAMES[w]}`, callback_data: `set:on:${w}` }];
+  });
+  if (integrationButtons.length) keyboard.push(integrationButtons);
   if (gmailPushConfigured(env) && gmail) keyboard.push([{ text: "📧 Адреса для сповіщень про листи", callback_data: "set:mailpush" }]);
   return { html, keyboard };
 }
@@ -90,7 +101,7 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
       "",
       `Зараз: ${marksText(marks)}`,
       "",
-      "<i>Нагадування приходять, якщо на сторінці налаштування підключено виклик кожні 5 хвилин (cron-job.org).</i>",
+      "<i>Нагадування приходять, якщо адресу /api/cron/reminders викликає cron-job.org кожні 5 хвилин.</i>",
     ].join("\n"),
     keyboard: [
       REMINDER_CHOICES.slice(0, 3).map(button),
@@ -122,6 +133,18 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
       `Адреса push-підписки Pub/Sub для сповіщень про нові листи (секретна, нікому не показуйте):\n<code>${esc(gmailPushEndpoint(env))}</code>`,
     );
     return;
+  }
+  const connect = /^set:(on|off):(bitrix|zoom)$/.exec(data);
+  if (connect) {
+    const what = connect[2] as Integration;
+    if (connect[1] === "on") {
+      await answer();
+      await startConnect(env, user.tg_id, what);
+      return;
+    }
+    await disconnect(env, what);
+    await answer(`${INTEGRATION_NAMES[what]} відключено`);
+    return show(await mainView(env, user));
   }
   if (data === "set:back") {
     await answer();
