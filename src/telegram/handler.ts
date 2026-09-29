@@ -1,6 +1,8 @@
 import { forget } from "../agent/memory";
 import { helpText, sendConnectGoogle, startOnboarding } from "../bot/onboarding";
+import { handleConnectAnswer } from "../bot/connect";
 import { handleSettingsButton, showSettings } from "../bot/settings";
+import { applyIntegrations } from "../integrations";
 import { type BitrixAction, showBitrixMenu } from "../bitrix/menu";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
@@ -37,6 +39,8 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
     return;
   }
 
+  // Bitrix24 / Zoom keys given in /settings become env values for this update.
+  await applyIntegrations(env);
   const text = msg.text?.trim() ?? "";
   if (text.startsWith("/") && (await handleCommand(env, user, text))) return;
   await handleOwnerMessage(env, user, msg);
@@ -116,6 +120,7 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
   const text = msg.text?.trim();
   if (!text) return;
   if (await handleGoogleAnswer(env, msg, text)) return;
+  if (await handleConnectAnswer(env, msg, text)) return;
   await env.jobs.send({ type: "agent", input: { chatId, inputType: "text", text, replyText: replyTextOf(msg), replyRef: refOf(msg.reply_to_message) }, photoIds: [] });
 }
 
@@ -156,6 +161,7 @@ async function handleCommand(env: Env, user: User, text: string): Promise<boolea
 async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   const user = await authorize(env, cq.from);
   if (!user) return;
+  await applyIntegrations(env);
   const chatId = cq.message?.chat.id ?? user.tg_id;
   const bx = /^bx:(my|overdue|stats|report)$/.exec(cq.data ?? "");
   if (bx) {

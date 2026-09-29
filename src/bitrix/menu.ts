@@ -26,7 +26,8 @@ export async function showBitrixMenu(env: Env, chatId: number): Promise<void> {
   if (!bitrixConfigured(env)) {
     await tg.send(
       chatId,
-      "📋 <b>Bitrix24 не підключено</b>\n\nПотрібен вхідний вебхук Bitrix24 (права «Задачі» та «Користувачі») у змінній BITRIX_WEBHOOK_URL.",
+      "📋 <b>Bitrix24 не підключено</b>\n\nНатисніть кнопку — я підкажу, що скопіювати з Bitrix24.",
+      { keyboard: [[{ text: "🔗 Підключити Bitrix24", callback_data: "set:on:bitrix" }]] },
     );
     return;
   }

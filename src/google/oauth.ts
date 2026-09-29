@@ -111,10 +111,21 @@ export interface OwnerSettings {
   d?: boolean;
 }
 
+/** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
+export interface Integrations {
+  bitrix?: string;
+  zoom?: { accountId: string; clientId: string; clientSecret: string };
+}
+
+/**
+ * The bot's only storage: the hidden data of ONE pinned message in the owner's chat — the encrypted Google grant
+ * (t), the /settings choices (s) and the encrypted integration keys (x). Any of them may be missing.
+ */
 interface GrantData {
   k: "google";
-  t: string;
+  t?: string;
   s?: OwnerSettings;
+  x?: string;
 }
 
 let grantCache: { at: number; grant: GoogleGrant | null; messageId: number | null; data: GrantData | null } | null = null;
@@ -142,16 +153,52 @@ export async function loadGrant(env: Env): Promise<GoogleGrant | null> {
     if (err instanceof HttpError && err.status === 400) pinned = undefined;
     else throw err;
   }
-  const data = readHidden<GrantData>(pinned);
+  const found = readHidden<GrantData>(pinned);
+  const data = found?.k === "google" ? found : null;
   let grant: GoogleGrant | null = null;
-  if (data?.k === "google") {
+  if (data?.t) {
     // Encrypted with another key (the bot token or ENCRYPTION_KEY changed): treated as not connected.
     grant = await decrypt(env.ENCRYPTION_KEY, data.t)
       .then((json) => JSON.parse(json) as GoogleGrant)
       .catch(() => null);
   }
-  grantCache = { at: Date.now(), grant, messageId: grant ? pinned!.message_id : null, data: grant ? data : null };
+  grantCache = { at: Date.now(), grant, messageId: data ? pinned!.message_id : null, data };
   return grant;
+}
+
+/** Bitrix24 / Zoom keys given in /settings (empty when none, or when they cannot be decrypted). */
+export async function loadIntegrations(env: Env): Promise<Integrations> {
+  await loadGrant(env);
+  const x = grantCache?.data?.x;
+  if (!x) return {};
+  return decrypt(env.ENCRYPTION_KEY, x)
+    .then((json) => JSON.parse(json) as Integrations)
+    .catch(() => ({}));
+}
+
+/** Keeps the integration keys (encrypted) in the pinned message; empty ones are dropped. */
+export async function saveIntegrations(env: Env, integrations: Integrations): Promise<void> {
+  const clean = Object.fromEntries(Object.entries(integrations).filter(([, v]) => v)) as Integrations;
+  await loadGrant(env);
+  const data: GrantData = { ...(grantCache?.data ?? { k: "google" }) };
+  if (Object.keys(clean).length) data.x = await encrypt(env.ENCRYPTION_KEY, JSON.stringify(clean));
+  else delete data.x;
+  await writeVault(env, data);
+}
+
+/** Writes the pinned message: edited in place when there is one, else sent and pinned. */
+async function writeVault(env: Env, data: GrantData): Promise<void> {
+  const tg = new Telegram(env);
+  const grant = grantCache?.grant ?? null;
+  const messageId = grantCache?.messageId;
+  if (messageId) {
+    await tg.edit(env.OWNER_TELEGRAM_ID, messageId, vaultMessage(data, grant?.email ?? null));
+    grantCache = { at: Date.now(), grant, messageId, data };
+    return;
+  }
+  const msg = await tg.send(env.OWNER_TELEGRAM_ID, vaultMessage(data, grant?.email ?? null));
+  await tg.call("pinChatMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: msg.message_id, disable_notification: true });
+  grantCache = { at: Date.now(), grant, messageId: msg.message_id, data };
 }
 
 /** The owner's /settings choices (empty until Google is connected, as they live in its pinned message). */
@@ -160,24 +207,20 @@ export async function loadOwnerSettings(env: Env): Promise<OwnerSettings> {
   return { ...(grantCache?.data?.s ?? {}) };
 }
 
-function grantMessage(data: GrantData, email: string | null): string {
+function vaultMessage(data: GrantData, email: string | null): string {
+  const head = data.t ? `🔐 <b>Google підключено</b>${email ? `: ${esc(email)}` : ""}` : "🔐 <b>Сховище бота</b>";
   return (
     hiddenData(data) +
-    `🔐 <b>Google підключено</b>${email ? `: ${esc(email)}` : ""}\n\n` +
-    "У цьому закріпленому повідомленні зашифрований доступ бота до вашого календаря й пошти, а також ваші налаштування — " +
-    "бот нічого не зберігає деінде. Не відкріплюйте його. Щоб відключити Google, просто видаліть це повідомлення."
+    `${head}\n\n` +
+    "У цьому закріпленому повідомленні зашифровані доступи бота (Google, Bitrix24, Zoom) і ваші налаштування — " +
+    "бот нічого не зберігає деінде. Не відкріплюйте й не видаляйте його: без нього доведеться підключати все заново."
   );
 }
 
 /** Saves the owner's /settings choices into the pinned message (edited in place, it stays pinned). */
 export async function saveOwnerSettings(env: Env, settings: OwnerSettings): Promise<boolean> {
-  const grant = await loadGrant(env);
-  const data = grantCache?.data;
-  const messageId = grantCache?.messageId;
-  if (!grant || !data || !messageId) return false;
-  const next: GrantData = { ...data, s: settings };
-  await new Telegram(env).edit(env.OWNER_TELEGRAM_ID, messageId, grantMessage(next, grant.email));
-  grantCache = { at: Date.now(), grant, messageId, data: next };
+  await loadGrant(env);
+  await writeVault(env, { ...(grantCache?.data ?? { k: "google" }), s: settings });
   return true;
 }
 
@@ -192,11 +235,11 @@ export async function hasGmailScope(env: Env): Promise<boolean> {
 
 async function saveGrant(env: Env, grant: GoogleGrant): Promise<void> {
   const tg = new Telegram(env);
-  const previous = (await loadGrant(env).catch(() => null)) ? grantCache?.messageId : null;
-  // Reconnecting keeps the owner's settings.
-  const settings = grantCache?.data?.s;
-  const data: GrantData = { k: "google", t: await encrypt(env.ENCRYPTION_KEY, JSON.stringify(grant)), ...(settings ? { s: settings } : {}) };
-  const msg = await tg.send(env.OWNER_TELEGRAM_ID, grantMessage(data, grant.email));
+  await loadGrant(env).catch(() => null);
+  const previous = grantCache?.messageId;
+  // Reconnecting keeps the owner's settings and integration keys.
+  const data: GrantData = { ...(grantCache?.data ?? { k: "google" }), t: await encrypt(env.ENCRYPTION_KEY, JSON.stringify(grant)) };
+  const msg = await tg.send(env.OWNER_TELEGRAM_ID, vaultMessage(data, grant.email));
   await tg.call("pinChatMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: msg.message_id, disable_notification: true });
   grantCache = { at: Date.now(), grant, messageId: msg.message_id, data };
   accessCache = null;
@@ -266,10 +309,21 @@ export async function getAccessToken(env: Env, forceRefresh = false): Promise<st
   return tokens.access_token;
 }
 
-/** Drops the grant (revoked or unusable): its pinned message is deleted. */
+/**
+ * Drops the grant (revoked or unusable). The pinned message is deleted — unless it also keeps settings or
+ * integration keys: then only the grant is removed from it.
+ */
 export async function forgetGoogleAuth(env: Env): Promise<void> {
   await loadGrant(env).catch(() => null);
   const messageId = grantCache?.messageId;
+  const data = grantCache?.data;
+  if (messageId && data && (data.s || data.x)) {
+    const { t: _dropped, ...rest } = data;
+    grantCache = { at: Date.now(), grant: null, messageId, data: rest };
+    accessCache = null;
+    await writeVault(env, rest).catch(() => undefined);
+    return;
+  }
   if (messageId) {
     const tg = new Telegram(env);
     await tg

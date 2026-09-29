@@ -48,8 +48,8 @@
 
 | Змінна | Навіщо |
 |---|---|
-| `BITRIX_WEBHOOK_URL` | задачі Bitrix24: вхідний вебхук (Bitrix24 → Розробникам → Інше → Вхідний вебхук, права «Задачі» та «Користувачі») |
-| `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | зустрічі в Zoom (застосунок Server-to-Server OAuth) |
+| `BITRIX_WEBHOOK_URL` | задачі Bitrix24 — або простіше: у боті /settings → «🔗 Підключити Bitrix24» |
+| `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | зустрічі в Zoom — або простіше: у боті /settings → «🔗 Підключити Zoom» |
 | `GMAIL_PUBSUB_TOPIC` | миттєві сповіщення про нові листи (топік Cloud Pub/Sub) |
 | `AGENT_MODEL` | текстові запити: Supervisor і агенти календаря й пошти; типова — `openai/gpt-oss-120b` |
 | `VISION_MODEL` | запити з картинками (скріншоти, фото); типова — `qwen/qwen3.7-flash` |

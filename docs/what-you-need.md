@@ -20,14 +20,11 @@
 
 **Необовʼязково, якщо захочете (без цього бот повністю працює):**
 
-- **Zoom** — зустрічі в Zoom замість Google Meet: Account ID, Client ID і Client Secret застосунку
-  Server-to-Server OAuth ([Zoom Marketplace](https://marketplace.zoom.us/develop/create), scope `meeting:write:admin`);
+- **Zoom** і **Bitrix24** підключаються прямо в боті: /settings → «🔗 Підключити …» — бот підкаже, що скопіювати;
 - миттєві сповіщення про нові листи: увімкніть [Cloud Pub/Sub API](https://console.cloud.google.com/apis/library/pubsub.googleapis.com),
   створіть топік, дайте `gmail-api-push@system.gserviceaccount.com` роль **Pub/Sub Publisher**, задайте
   `GMAIL_PUBSUB_TOPIC` = `projects/<project-id>/topics/<назва>`, у боті /settings → «📧 Адреса для сповіщень про листи»
   → створіть Push-підписку на цю адресу → перепідключіть Google;
-- **Bitrix24** — задачі: у Bitrix24 → Розробникам → Інше → **Вхідний вебхук**, права «Задачі» та «Користувачі»;
-  адресу вебхука вставте в `BITRIX_WEBHOOK_URL`;
 - `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `AGENT_MODEL`, `VISION_MODEL`, `LLM_MODEL`;
 - нагадування за 30 і за 10 хв до зустрічі — потрібен виклик кожні 5 хв з cron-job.org (див. README → «Нагадування»); ранковий список зустрічей працює й так.
 

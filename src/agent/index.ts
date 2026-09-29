@@ -83,7 +83,7 @@ export function modelFor(env: Env, input: AgentInput): string {
 
 async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date, ctx: RunContext): Promise<string> {
   if (name === "bitrix_agent") {
-    if (!bitrixConfigured(env)) return "Bitrix24 не підключено (потрібен вхідний вебхук Bitrix24 у змінній BITRIX_WEBHOOK_URL).";
+    if (!bitrixConfigured(env)) return "Bitrix24 ще не підключено. Підключіть його в /settings → «🔗 Підключити Bitrix24».";
     const memoryKey = `${name}:${input.chatId}`;
     const answer = await runAgent(env, {
       model: ctx.model,

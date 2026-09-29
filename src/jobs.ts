@@ -10,6 +10,7 @@ import { markUpcoming, startWatch, syncRecent } from "./google/sync";
 import { bytesToBase64 } from "./lib/crypto";
 import { logError } from "./lib/errors";
 import type { ContentPart } from "./llm/openrouter";
+import { applyIntegrations } from "./integrations";
 import { takeBatch } from "./session";
 import { transcribe } from "./stt/transcribe";
 import { esc, Telegram } from "./telegram/api";
@@ -66,6 +67,8 @@ async function withTyping(env: Env, chatId: number, work: () => Promise<void>): 
 }
 
 export async function runJob(env: Env, job: Job): Promise<void> {
+  // Bitrix24 / Zoom keys given in /settings become env values for this job.
+  await applyIntegrations(env);
   switch (job.type) {
     case "agent":
       return withTyping(env, job.input.chatId, async () =>
