@@ -1,11 +1,8 @@
 import {
   type Config,
   type Env,
-  gmailPushConfigured,
   googleConfigured,
-  googleRedirectUri,
   REQUIRED_VARS,
-  zoomConfigured,
 } from "./env";
 import { decodePush, gmailPushToken, type PubSubPush, startGmailWatch } from "./google/gmailPush";
 import { botUsername, connectWithCode } from "./google/connect";
@@ -14,7 +11,7 @@ import { isOurChannel } from "./google/sync";
 import { type Job, runWithRetry } from "./jobs";
 import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
-import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList } from "./setup";
+import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList, TUTORIAL_URL } from "./setup";
 import { esc, Telegram } from "./telegram/api";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
@@ -244,103 +241,40 @@ export async function ensureTelegramWebhook(env: Env): Promise<{ username: strin
 }
 
 /**
- * GET /api/setup — the page whoever deployed this copy opens first: registers the Telegram webhook and shows a
- * checklist (Telegram, Google, first /start). Safe to open repeatedly; reveals no secrets.
+ * GET /api/setup — the page whoever deployed this copy opens: registers the Telegram webhook and says, in plain
+ * words, whether the bot works and what is left (open the bot, connect Google). How-tos live in the guide
+ * (TUTORIAL_URL); machine-readable checks are /api/health. Safe to open repeatedly; reveals no secrets.
  */
 export async function setupPage(_req: Request, env: Env): Promise<Response> {
-  const steps: SetupStep[] = [
-    { status: "ok", title: "Змінні середовища", details: `Обовʼязкові задані: ${REQUIRED_VARS.map(code).join(", ")}.` },
-  ];
+  const steps: SetupStep[] = [];
 
   let botUsername: string | null = null;
   try {
-    const { username } = await ensureTelegramWebhook(env);
-    botUsername = username;
+    botUsername = (await ensureTelegramWebhook(env)).username;
+    steps.push({ status: "ok", title: "Бот працює", details: `<a href="https://t.me/${esc(botUsername)}">@${esc(botUsername)}</a> готовий приймати ваші повідомлення.` });
+  } catch {
+    steps.push({ status: "error", title: "Бот не відповідає", details: "Telegram не прийняв токен бота. Перевірте токен і перерозгорніть проєкт." });
+  }
+
+  const started = await ownerStarted(env);
+  const connected = started && (await hasGoogleAuth(env).catch(() => false));
+  if (!googleConfigured(env)) {
+    steps.push({ status: "todo", title: "Google ще не налаштовано", details: "Щоб бот бачив календар і пошту, додайте Google-клієнт — покроково в інструкції." });
+  } else if (connected) {
+    steps.push({ status: "ok", title: "Google підключено", details: "Календар і пошта на звʼязку." });
+  } else {
     steps.push({
-      status: "ok",
-      title: "Telegram-бот",
-      details: `Вебхук зареєстровано на ${code(`${env.PUBLIC_URL}/api/telegram`)}. Бот: <a href="https://t.me/${esc(username)}">@${esc(username)}</a>`,
-    });
-  } catch (err) {
-    steps.push({
-      status: "error",
-      title: "Telegram-бот",
-      details: `Не вдалося звʼязатися з Telegram: ${esc(err instanceof Error ? err.message : String(err))}. Перевірте ${code("TELEGRAM_BOT_TOKEN")}.`,
+      status: "todo",
+      title: started ? "Підключіть Google" : "Відкрийте бота",
+      details: started ? "У боті натисніть «Підключити Google»." : "Напишіть боту /start — він привітається й запропонує підключити Google.",
     });
   }
 
-  const googleOk = googleConfigured(env)
-    ? env.GOOGLE_OAUTH_MODE === "desktop"
-      ? "Google-клієнт (Desktop app) задано. Redirect URI не потрібен — у боті натисніть «Підключити Google»."
-      : `Google-клієнт (Web application) задано. Додайте в нього Authorized redirect URI (Google Cloud Console → Clients → ваш клієнт): ${code(googleRedirectUri(env))}`
-    : null;
-  steps.push(
-    googleOk
-      ? { status: "ok", title: "Google Calendar і Gmail", details: googleOk }
-      : {
-          status: "todo",
-          title: "Google Calendar і Gmail",
-          details: `Створіть Google-клієнт — 5 хвилин, покроково в <a href="https://github.com/Mem341/AI-secretary/blob/main/docs/what-you-need.md#4-google-json-клієнта-desktop-app">інструкції</a>:<ol>
-<li>У проєкті Google Cloud увімкніть <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</a> і <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">Gmail API</a>.</li>
-<li><a href="https://console.cloud.google.com/auth/overview">Google Auth Platform</a> → Get started: для Google Workspace — <b>Internal</b>; для звичайного Gmail — <b>External</b>, потім Audience → <b>Publish app</b>.</li>
-<li><a href="https://console.cloud.google.com/auth/clients">Clients</a> → Create client → <b>Desktop app</b> → Create → <b>Download JSON</b>.</li>
-<li>Вміст цього файлу цілком вставте у змінну ${code("GOOGLE_CLIENT_JSON")} (Vercel → Settings → Environment Variables) і перерозгорніть.</li></ol>
-Redirect URI налаштовувати не треба.`,
-        },
-  );
-
-  steps.push(
-    gmailPushConfigured(env)
-      ? {
-          status: "ok",
-          title: "Миттєві сповіщення про нові листи",
-          details: `Pub/Sub-топік ${code(env.GMAIL_PUBSUB_TOPIC)}. Адресу для push-підписки (з секретним токеном) бот надсилає вам у /settings.`,
-        }
-      : {
-          status: "optional",
-          title: "Миттєві сповіщення про нові листи (необовʼязково)",
-          details: `Без цього пошта працює на запит («перевір пошту»). Щоб бот одразу повідомляв про нові листи:<ol>
-<li>Увімкніть <a href="https://console.cloud.google.com/apis/library/pubsub.googleapis.com">Cloud Pub/Sub API</a> і створіть топік, напр. ${code("gmail-notify")}.</li>
-<li>У топіку → Permissions дайте ${code("gmail-api-push@system.gserviceaccount.com")} роль <b>Pub/Sub Publisher</b>.</li>
-<li>Додайте змінну ${code("GMAIL_PUBSUB_TOPIC")} = ${code("projects/<project-id>/topics/gmail-notify")} і перерозгорніть.</li>
-<li>Відкрийте в боті /settings — там буде адреса для push-підписки. Створіть у топіку підписку типу <b>Push</b> на цю адресу.</li>
-<li>Перепідключіть Google у /settings — бот підпишеться на скриньку.</li></ol>`,
-        },
-  );
-
-  steps.push(
-    zoomConfigured(env)
-      ? { status: "ok", title: "Zoom", details: "Zoom підключено — його можна обрати форматом зустрічі." }
-      : {
-          status: "optional",
-          title: "Zoom (необовʼязково)",
-          details: `Google Meet працює без налаштувань. Щоб створювати зустрічі в Zoom: у <a href="https://marketplace.zoom.us/develop/create">Zoom Marketplace</a>
-створіть застосунок <b>Server-to-Server OAuth</b> зі scope ${code("meeting:write:admin")} і додайте ${code("ZOOM_ACCOUNT_ID")}, ${code("ZOOM_CLIENT_ID")}, ${code("ZOOM_CLIENT_SECRET")}.`,
-        },
-  );
-
-  steps.push({
-    status: "optional",
-    title: "Нагадування перед зустріччю (необовʼязково)",
-    details: `Ранковий список зустрічей працює й так. Коли саме нагадувати (за 1 год, 30, 15, 10, 5 хв), власник обирає в боті: /settings → ⏰. Щоб бот нагадував перед кожною зустріччю (без ШІ, просто з календаря),
-адресу ${code(`${env.PUBLIC_URL}/api/cron/reminders`)} треба викликати кожні 5 хвилин. Безкоштовно:
-<a href="https://cron-job.org">cron-job.org</a> → Sign up → <b>Create cronjob</b> → URL — адреса вище, Schedule — <b>Every 5 minutes</b>${env.CRON_SECRET ? `,
-у вкладці Advanced додайте заголовок ${code("Authorization: Bearer <CRON_SECRET>")}` : ""} → Create. На Vercel Pro замість цього можна додати cron у ${code("vercel.json")}.`,
-  });
-
-  const started = await ownerStarted(env);
-  const calendar = started && (await hasGoogleAuth(env).catch(() => false));
-  const botLink = botUsername ? `<a class="button" href="https://t.me/${esc(botUsername)}?start=setup">Відкрити бота</a>` : "";
-  steps.push(
-    calendar
-      ? { status: "ok", title: "Ви підключені", details: "Google підключено. Пишіть боту про зустрічі." }
-      : {
-          status: "todo",
-          title: started ? "Підключіть Google у боті" : "Напишіть боту /start",
-          details: `Бот відповідає лише власнику з ${code("OWNER_TELEGRAM_ID")}. Відкрийте бота, напишіть /start і натисніть «Підключити Google».<br>${botLink}`,
-        },
-  );
-  return renderSetupPage(steps);
+  const buttons = [
+    botUsername ? `<a class="button" href="https://t.me/${esc(botUsername)}?start=setup">Відкрити бота</a>` : "",
+    `<a class="button secondary" href="${TUTORIAL_URL}">📘 Інструкція</a>`,
+  ].join(" ");
+  return renderSetupPage(steps, buttons);
 }
 
 /** The setup page when the deployment cannot start yet: which variables are missing or wrong. */

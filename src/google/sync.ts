@@ -128,6 +128,14 @@ function durationText(minutes: number): string {
 
 /** The n8n "Формат: нова зустріч" notice: an invitation with its organizer, guests' answers and the video link. */
 export function invitationNotice(ev: GEvent): string {
+  return eventNotice(ev, "📅 <b>Запрошення на зустріч</b>");
+}
+
+/**
+ * An event in the n8n notice format under `header`: title, date, time and length, organizer, guests with their
+ * answers, the video link, place and description. `note` (trusted HTML) goes right under the time.
+ */
+export function eventNotice(ev: GEvent, header: string, note = ""): string {
   const description = (ev.description ?? "").replace(/<[^>]*>/g, "").trim().slice(0, 500);
   const location = ev.location ?? "";
   const organizer = ev.organizer?.displayName || ev.organizer?.email || "";
@@ -159,14 +167,15 @@ export function invitationNotice(ev: GEvent): string {
       return `  ${mark} ${esc(a.displayName || a.email.split("@")[0]!)}`;
     });
 
-  let msg = "📅 <b>Запрошення на зустріч</b>\n\n";
+  let msg = `${header}\n\n`;
   msg += `📌 <b>${esc(ev.summary || "Без назви")}</b>\n📆 ${d}.${mo}.${y} (${WEEKDAYS[kyivParts(start).weekday]})\n`;
   if (allDay) msg += "🕐 Весь день\n";
   else {
     const minutes = end ? Math.round((end.getTime() - start.getTime()) / MINUTE) : 0;
     msg += `🕐 ${formatTime(start)} — ${end ? formatTime(end) : ""}${minutes ? ` (${durationText(minutes)})` : ""}\n`;
   }
-  if (organizer) msg += `\n👤 <b>Організатор:</b> ${esc(organizer)}\n`;
+  if (note) msg += `\n${note}\n`;
+  if (organizer) msg += `\n👤 <b>Організатор:</b> ${esc(organizer)}${ev.organizer?.self ? " (ви)" : ""}\n`;
   if (guests.length) msg += `\n👥 <b>Учасники (${guests.length}):</b>\n${guests.join("\n")}\n`;
   if (video) {
     const name = platform || (video.includes("zoom") ? "Zoom" : "Google Meet");
@@ -175,6 +184,16 @@ export function invitationNotice(ev: GEvent): string {
   if (location && !location.includes("zoom") && !location.includes("meet.google")) msg += `\n📍 <b>Місце:</b> ${esc(location)}\n`;
   if (description && !description.includes("zoom.us") && !description.includes("meet.google")) msg += `\n📝 <b>Опис:</b>\n<i>${esc(description)}</i>\n`;
   return msg.trimEnd();
+}
+
+/**
+ * Who cancelled. Google does not say who deleted an event, but only its organizer (or someone they let edit it)
+ * can cancel it for everyone; the reason, if any, is only in the organizer's email to the guests.
+ */
+function cancelledBy(ev: GEvent): string {
+  if (ev.organizer?.self) return "🗑 <b>Скасовано:</b> у вашому Google Calendar (ви організатор)";
+  const who = ev.organizer?.displayName || ev.organizer?.email;
+  return who ? `🗑 <b>Скасував організатор:</b> ${esc(who)}` : "🗑 <b>Скасовано організатором</b>";
 }
 
 /** ✅ Прийняти / ❌ Відхилити; Telegram limits callback_data to 64 bytes, so an unusually long id gets no buttons. */
@@ -264,13 +283,11 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
     const full = ev.summary ? ev : await new Calendar(env).getEvent(ev.id).catch(() => ev);
     const fullProps = full.extendedProperties?.private ?? {};
     if (fullProps[PROP_BOT_CANCEL]) return false;
-    const start = full.start?.dateTime ? Date.parse(full.start.dateTime) : NaN;
     const end = full.end?.dateTime ? Date.parse(full.end.dateTime) : NaN;
     if (!Number.isNaN(end) && end < now) return false;
     // Only events the bot knew about: an unknown id may be an event that never concerned the owner.
     if (!fullProps[PROP_START] && !fullProps[PROP_DRAFT]) return false;
-    const when = Number.isNaN(start) ? "" : `\n${esc(formatRange(new Date(start), new Date(end)))}`;
-    await notify(env, `❌ <b>Подію скасовано в календарі</b>\n\n<b>${esc(full.summary ?? "без назви")}</b>${when}`, null);
+    await notify(env, eventNotice(full, "❌ <b>Зустріч скасовано</b>", cancelledBy(full)), null);
     return true;
   }
 
@@ -307,19 +324,8 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
   const before = Number(known);
   const duration = m.end_at - m.start_at;
   await remember(env, ev, m.start_at);
-  await notify(
-    env,
-    [
-      `🔄 <b>Подію перенесено в календарі</b>`,
-      "",
-      `<b>${esc(m.title ?? "без назви")}</b>`,
-      `Було: ${esc(formatRange(new Date(before), new Date(before + duration)))}`,
-      `Стало: ${esc(formatRange(new Date(m.start_at), new Date(m.end_at)))}`,
-      "",
-      REPLY_HINT,
-    ].join("\n"),
-    ev.id,
-  );
+  const was = `⏪ <b>Було:</b> ${esc(formatRange(new Date(before), new Date(before + duration)))}`;
+  await notify(env, `${eventNotice(ev, "🔄 <b>Зустріч перенесено</b>", was)}\n\n<i>${REPLY_HINT}</i>`, ev.id);
   return true;
 }
 

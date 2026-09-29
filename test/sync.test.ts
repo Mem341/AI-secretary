@@ -134,9 +134,9 @@ describe("instant notices, remembered by Google itself", () => {
     });
     expect(await reportChange(env, moved, now)).toBe(true);
     const text = sentTexts(calls)[0]!;
-    expect(text).toContain("Подію перенесено");
-    expect(text).toContain("Було:");
-    expect(text).toContain("Стало:");
+    expect(text).toContain("🔄 <b>Зустріч перенесено</b>");
+    expect(text).toContain("⏪ <b>Було:</b>");
+    expect(text).toContain("📌 <b>Event e1</b>");
     expect(writes).toEqual([{ id: "e1", props: { aisStart: String(soon + 86400_000), other: "x", aisRsvp: "" } }]);
   });
 
@@ -154,13 +154,26 @@ describe("instant notices, remembered by Google itself", () => {
   it("reports a cancellation of a known event, but not one the bot cancelled itself", async () => {
     await connectGoogle();
     const full = (props: Record<string, string>) =>
-      timed("e1", iso(soon), iso(soon + HOUR), { status: "cancelled", extendedProperties: { private: props } });
+      timed("e1", iso(soon), iso(soon + HOUR), {
+        status: "cancelled",
+        organizer: { email: "boss@partner.ua", displayName: "Іван Петренко" },
+        attendees: [
+          { email: "me@acme.ua", self: true, responseStatus: "accepted" },
+          { email: "anna@partner.ua", displayName: "Анна", responseStatus: "accepted" },
+        ],
+        location: "Офіс, 3 поверх",
+        extendedProperties: { private: props },
+      });
     let props: Record<string, string> = { aisStart: String(soon) };
     const calls = mockFetch([(url) => (url.pathname.endsWith("/events/e1") ? Response.json(full(props)) : undefined)]);
     const { env } = testEnv();
     expect(await reportChange(env, { id: "e1", status: "cancelled", updated: iso(now) }, now)).toBe(true);
-    expect(sentTexts(calls)[0]).toContain("Подію скасовано");
-    expect(sentTexts(calls)[0]).toContain("Event e1");
+    const text = sentTexts(calls)[0]!;
+    expect(text).toContain("❌ <b>Зустріч скасовано</b>");
+    expect(text).toContain("📌 <b>Event e1</b>");
+    expect(text).toContain("🗑 <b>Скасував організатор:</b> Іван Петренко");
+    expect(text).toContain("👥 <b>Учасники (1):</b>\n  ✅ Анна");
+    expect(text).toContain("📍 <b>Місце:</b> Офіс, 3 поверх");
 
     props = { aisStart: String(soon), aisBotCancel: "1" };
     expect(await reportChange(env, { id: "e1", status: "cancelled", updated: iso(now + 1) }, now)).toBe(false);
