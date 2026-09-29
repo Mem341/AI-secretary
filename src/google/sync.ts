@@ -259,13 +259,11 @@ export function rsvpNotice(ev: GEvent, changed: GAttendee[]): string {
 }
 
 /**
- * Remembers on the event (silently) the start time and the guests' answers the bot has seen. Failures only cost a
- * repeated notice.
+ * Remembers on the event (silently) the start time and the guests' answers the bot has seen — as a claim on this
+ * version of the event: false when another copy of the bot already handled the same change (then it stays silent).
  */
-async function remember(env: Env, ev: GEvent, start: number): Promise<void> {
-  await new Calendar(env)
-    .setPrivate(ev.id, { ...(ev.extendedProperties?.private ?? {}), [PROP_START]: String(start), [PROP_RSVP]: rsvpSnapshot(ev) })
-    .catch((err) => console.warn("gcal: cannot mark event", ev.id, err instanceof Error ? err.message : err));
+async function remember(env: Env, ev: GEvent, start: number): Promise<boolean> {
+  return new Calendar(env).claimPrivate(ev, { ...(ev.extendedProperties?.private ?? {}), [PROP_START]: String(start), [PROP_RSVP]: rsvpSnapshot(ev) });
 }
 
 /**
@@ -303,8 +301,7 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
     const snapshot = props[PROP_RSVP] ?? (props[PROP_DRAFT] ? "" : null);
     const changed = snapshot === null ? [] : rsvpChanges(ev, snapshot);
     if (snapshot !== null && (props[PROP_RSVP] ?? "") === rsvpSnapshot(ev)) return false;
-    await remember(env, ev, m.start_at);
-    if (!changed.length) return false;
+    if (!(await remember(env, ev, m.start_at)) || !changed.length) return false;
     await notify(env, rsvpNotice(ev, changed), ev.id);
     return true;
   }
@@ -314,7 +311,7 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
     const created = ev.created ? Date.parse(ev.created) : NaN;
     const updated = ev.updated ? Date.parse(ev.updated) : now;
     const fresh = !Number.isNaN(created) && updated - created < 5 * MINUTE && !props[PROP_DRAFT];
-    await remember(env, ev, m.start_at);
+    if (!(await remember(env, ev, m.start_at))) return false;
     // n8n: an event the owner created is not announced.
     if (!fresh || ev.organizer?.self) return false;
     await notify(env, invitationNotice(ev), ev.id, invitationButtons(ev.id));
@@ -323,7 +320,7 @@ export async function reportChange(env: Env, ev: GEvent, now = Date.now()): Prom
 
   const before = Number(known);
   const duration = m.end_at - m.start_at;
-  await remember(env, ev, m.start_at);
+  if (!(await remember(env, ev, m.start_at))) return false;
   const was = `⏪ <b>Було:</b> ${esc(formatRange(new Date(before), new Date(before + duration)))}`;
   await notify(env, `${eventNotice(ev, "🔄 <b>Зустріч перенесено</b>", was)}\n\n<i>${REPLY_HINT}</i>`, ev.id);
   return true;

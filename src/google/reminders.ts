@@ -86,11 +86,12 @@ export async function checkReminders(env: Env, now = Date.now()): Promise<Remind
     if (m.meet_url) lines.push(`🔗 ${esc(m.meet_url)}`);
     else if (m.location) lines.push(`📍 ${esc(m.location)}`);
     if (m.attendees.length) lines.push(`👥 ${m.attendees.map((a) => esc(a.name ?? a.email)).join(", ")}`);
+    // Marked first, as a claim on this version of the event: two checks running at once send it only once.
+    // Recurring instances are not marked (that would turn each into an exception); the instance memory covers them.
+    if (!ev.recurringEventId && !(await cal.claimPrivate(ev, { ...props, [PROP_REMINDED]: `${m.start_at}:${mark}` }))) continue;
     await tg.send(env.OWNER_TELEGRAM_ID, hiddenData({ k: "ev", id: ev.id } satisfies EventRef) + lines.join("\n"));
     check.sent++;
     seen.sentNow = mark;
-    // Recurring instances are not marked (that would turn each into an exception); the instance memory covers them.
-    if (!ev.recurringEventId) await cal.setPrivate(ev.id, { ...props, [PROP_REMINDED]: `${m.start_at}:${mark}` }).catch(() => undefined);
   }
   return check;
 }

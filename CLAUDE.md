@@ -64,7 +64,9 @@ webhook and redirects to the bot; `/api/health` shows the state.
   in the bot's own messages; Telegram returns it with button presses and replies. Keep it under
   `MAX_HIDDEN`.
 - Calendar: read live; what the bot already reported is a private extended property on each event
-  (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`, `aisRsvp` — guests' answers already reported). Gmail: a hidden label marks reported emails.
+  (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`, `aisRsvp` — guests' answers already reported), written with
+  If-Match on the event's etag before a notice or reminder is sent (`claimPrivate`): parallel copies of the bot
+  handling the same push race there and only one sends. Gmail: a hidden label marks reported emails.
 - The agents' chat memory (`agent/memory.ts`, the owner asked for it): ONE file, memory.json, in the bot's hidden
   Drive folder (`google/drive.ts`, scope `drive.appdata`): per-agent threads of the last 20/50/100 messages (owner's
   choice, `OwnerSettings.m`), the model gets the last `SEND`; plus facts the agents save with `remember_fact`.

@@ -15,6 +15,8 @@ export interface GAttendee {
 
 export interface GEvent {
   id: string;
+  /** Version of the event; a write with If-Match fails (412) if someone changed it in between. */
+  etag?: string;
   status?: "confirmed" | "tentative" | "cancelled";
   summary?: string;
   description?: string;
@@ -87,11 +89,28 @@ export class Calendar {
    * Sets private properties on the owner's copy of the event, silently (no emails to guests). The bot uses them as
    * its memory of what it already reported about the event — see google/sync.ts.
    */
-  setPrivate(eventId: string, props: Record<string, string>): Promise<GEvent> {
+  setPrivate(eventId: string, props: Record<string, string>, ifMatch?: string): Promise<GEvent> {
     return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
       method: "PATCH",
+      headers: ifMatch ? { "if-match": ifMatch } : {},
       body: JSON.stringify({ extendedProperties: { private: props } }),
     });
+  }
+
+  /**
+   * setPrivate that only succeeds on the version of the event we read (If-Match): a claim. Two copies of the bot
+   * handling the same push (Google often sends several) race here; only one wins, so a notice is sent once.
+   * False = someone else already wrote it. Other errors do not block (a repeated notice beats a lost one).
+   */
+  async claimPrivate(ev: GEvent, props: Record<string, string>): Promise<boolean> {
+    try {
+      await this.setPrivate(ev.id, props, ev.etag);
+      return true;
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 412) return false;
+      console.warn("gcal: cannot mark event", ev.id, err instanceof Error ? err.message : err);
+      return true;
+    }
   }
 
   /** Deletes the event and notifies attendees. */
