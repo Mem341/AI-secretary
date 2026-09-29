@@ -19,7 +19,8 @@ function fakePubSub(disabled = false) {
     if (url.hostname !== "pubsub.googleapis.com") return undefined;
     if (disabled) return Response.json({ error: { status: "PERMISSION_DENIED", message: "Cloud Pub/Sub API has not been used in project p1 before or it is disabled. SERVICE_DISABLED" } }, { status: 403 });
     const path = url.pathname;
-    if (path.endsWith(":getIamPolicy")) return Response.json({ etag: "x" });
+    // Like Google: the policy is read with GET only; a POST gets an HTML 404.
+    if (path.endsWith(":getIamPolicy")) return init.method === "GET" ? Response.json({ etag: "x" }) : new Response("<!DOCTYPE html><title>Error 404</title>", { status: 404 });
     if (path.endsWith(":setIamPolicy")) {
       made.policy = JSON.parse(init.bodyText).policy;
       return Response.json(made.policy);
