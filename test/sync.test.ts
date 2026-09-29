@@ -414,3 +414,33 @@ describe("guests' answers to the owner's meetings", () => {
     expect(writes.map((w) => w.props.aisRsvp)).toEqual([rsvpSnapshot(meeting("accepted", "declined", {}))]);
   });
 });
+
+describe("two copies of the bot handling the same push", () => {
+  it("send the invitation only once: the event's version (etag) lets one claim it", async () => {
+    await connectGoogle();
+    const now = Date.now();
+    const soon = now + 2 * HOUR;
+    let etag = '"v1"';
+    const calls = mockFetch([
+      (url, init) => {
+        if (init.method !== "PATCH" || !url.pathname.startsWith("/calendar/v3/calendars/primary/events/")) return undefined;
+        if (new Headers(init.headers).get("if-match") !== etag) return Response.json({ error: { code: 412 } }, { status: 412 });
+        etag = '"v2"';
+        return Response.json({ id: "dup" });
+      },
+    ]);
+    const { env } = testEnv();
+    const ev = timed("dup", iso(soon), iso(soon + HOUR), {
+      etag: '"v1"',
+      created: iso(now - 60_000),
+      updated: iso(now),
+      organizer: { email: "boss@partner.ua" },
+    });
+    const { resetSession } = await import("../src/session");
+    const first = reportChange(env, ev, now);
+    resetSession(); // the second copy has its own memory: only Google's etag stands between them
+    const second = reportChange(env, ev, now);
+    expect((await Promise.all([first, second])).filter(Boolean)).toHaveLength(1);
+    expect(sentTexts(calls).filter((t) => t.includes("Запрошення на зустріч"))).toHaveLength(1);
+  });
+});
