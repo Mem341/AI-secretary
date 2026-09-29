@@ -82,9 +82,11 @@ describe("/api/setup", () => {
     ]);
     expect(tgCalls(calls, "setMyCommands")).toHaveLength(1);
     expect(html).toContain("@my_secretary_bot");
-    expect(html).toContain("Desktop app");
-    expect(html).toContain("GOOGLE_CLIENT_JSON");
-    expect(html).toContain("Готово 2 з 4");
+    expect(html).toContain("Бот працює");
+    expect(html).toContain("Google ще не налаштовано");
+    expect(html).toContain("docs/tutorial.md");
+    // Plain words only: no variable names, URLs of endpoints or other technical details.
+    expect(html).not.toMatch(/GOOGLE_CLIENT_JSON|OWNER_TELEGRAM_ID|api\/telegram|Pub\/Sub|вебхук/i);
     expect(html).not.toContain("База даних");
     expect(html).not.toContain("tg-secret");
     expect(html).not.toContain(String(OWNER));

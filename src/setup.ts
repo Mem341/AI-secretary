@@ -1,5 +1,8 @@
 import { esc } from "./telegram/api";
 
+/** The owner's guide: connecting Google, Zoom, new-mail notifications and reminders. */
+export const TUTORIAL_URL = "https://github.com/Mem341/AI-secretary/blob/main/docs/tutorial.md";
+
 /** One row of the setup checklist. */
 export interface SetupStep {
   status: "ok" | "todo" | "optional" | "error";
@@ -28,7 +31,8 @@ code{background:var(--code);padding:2px 6px;border-radius:6px;font-size:.88em;wo
 a{color:inherit}.button{display:inline-block;margin-top:10px;padding:10px 18px;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;margin-top:28px;text-align:center}
 .card .big{font-size:2.4rem;line-height:1}.card p{color:var(--muted)}
-footer{margin-top:28px;color:var(--muted);font-size:.9rem}
+.actions{margin-top:24px;display:flex;gap:10px;flex-wrap:wrap}.actions .button{margin-top:0}
+.button.secondary{background:var(--card);color:var(--text);border:1px solid var(--line)}
 `;
 
 /** One page in the bot's look (light and dark), used by the setup page and the Google connection pages. */
@@ -60,11 +64,10 @@ export function stepsList(steps: { title: string; details?: string }[]): string 
     .join("\n")}</ol>`;
 }
 
-/** Self-contained setup page for whoever deployed this copy: what works and what is left to do. */
-export function renderSetupPage(steps: SetupStep[], footer = ""): Response {
-  const done = steps.filter((s) => s.status === "ok").length;
-  const required = steps.filter((s) => s.status !== "optional").length;
+/** The setup page: a few plain-language status cards and the action buttons (trusted HTML). */
+export function renderSetupPage(steps: SetupStep[], actions = ""): Response {
   const ready = steps.every((s) => s.status === "ok" || s.status === "optional");
+  const left = steps.filter((s) => s.status === "todo" || s.status === "error").length;
   const rows = steps
     .map(
       (s) => `<li class="step ${s.status}"><span class="icon" aria-hidden="true">${ICON[s.status]}</span>
@@ -73,10 +76,10 @@ export function renderSetupPage(steps: SetupStep[], footer = ""): Response {
     .join("\n");
   return renderPage(
     "налаштування",
-    `<header><h1>🗓 AI-secretary</h1><p>Особистий Telegram-секретар. Ця сторінка показує, що вже налаштовано у вашому розгортанні.</p>
-<span class="badge${ready ? " ready" : ""}">${ready ? "Готово до роботи" : `Готово ${done} з ${required}`}</span></header>
+    `<header><h1>🗓 AI-secretary</h1><p>Ваш особистий секретар у Telegram</p>
+<span class="badge${ready ? " ready" : ""}">${ready ? "✓ Усе працює" : left === 1 ? "Залишився 1 крок" : `Залишилось кроків: ${left}`}</span></header>
 <ol class="steps">${rows}</ol>
-<footer>${footer}Сторінку можна оновлювати скільки завгодно — вона нічого не ламає.</footer>`,
+${actions ? `<div class="actions">${actions}</div>` : ""}`,
   );
 }
 
