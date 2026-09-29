@@ -101,7 +101,7 @@ Include the bot's @username and the site URL. No explanations of internals, no a
 | Symptom | Cause / fix |
 |---------|-------------|
 | /api/setup: "GOOGLE_CLIENT_JSON must be the content…" | The variable holds something other than the downloaded JSON. Set the whole file again. |
-| Google: `access_denied` / "app not available" | External app still in Testing. Fix: Google Auth Platform → Audience → Publish app. |
+| Google: «Доступ заблокирован… приложение тестируется», 403 `access_denied` | The consent screen of that Google Cloud project is in **Testing** and the account is not a test user. The client type (Desktop/Web) does not matter. Fix: Google Auth Platform → Audience → **Publish app** (or add the account under Test users). The app name shown there comes from Branding. |
 | Bot: «Google не прийняв цей код» | The code is single-use and lives a few minutes. Press «Підключити Google» again. |
 | «Доступ до Google втрачено» | Access was revoked, the consent screen is in Testing (7-day expiry), or the bot token / `ENCRYPTION_KEY` changed. Reconnect via `/settings`. |
 | Bot silent | /api/setup → Telegram row. Check that `OWNER_TELEGRAM_ID` is the user's number, not the bot's. |
