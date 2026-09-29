@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { remindersCron } from "../src/app";
-import { classify } from "../src/bot/assistant";
 import type { GEvent } from "../src/google/calendar";
 import { sendDigest, sendReminders } from "../src/google/reminders";
 import { handleUpdate } from "../src/telegram/handler";
 import { readHidden } from "../src/telegram/hidden";
 import type { TgUpdate } from "../src/telegram/types";
-import { connectGoogle, lastBotMessage, llmReply, mockFetch, OWNER, resetInstance, routerRoute, runJobs, testEnv, tgCalls } from "./helpers";
+import { calendarList, connectGoogle, lastBotMessage, mockFetch, OWNER, resetInstance, testEnv, tgCalls } from "./helpers";
 
 beforeEach(() => resetInstance());
 afterEach(() => vi.restoreAllMocks());
@@ -27,63 +26,64 @@ const ev = (id: string, start: number, extra: Partial<GEvent> = {}): GEvent => (
   ...extra,
 });
 
-describe("router: free text without commands", () => {
-  it("the cheap router model decides; bad answers fall back to keywords", async () => {
-    mockFetch([routerRoute("agenda", { from: "2026-10-01", to: "2026-10-02" })]);
-    const { env } = testEnv();
-    expect(await classify(env, "що в мене в четвер?")).toEqual({ intent: "agenda", from: "2026-10-01", to: "2026-10-02" });
-
-    vi.restoreAllMocks();
-    mockFetch([(url) => (url.hostname === "openrouter.ai" ? llmReply({ nonsense: true }) : undefined)]);
-    expect((await classify(env, "перевір пошту")).intent).toBe("mail");
-    expect((await classify(env, "зустріч з Іваном")).intent).toBe("meeting");
-  });
-
-  it("«що в мене завтра?» lists the day from the live calendar", async () => {
+describe("commands and menu", () => {
+  it("/today lists today's meetings straight from the calendar, no AI", async () => {
     await connectGoogle();
     const now = Date.now();
-    let range: URLSearchParams | undefined;
     const calls = mockFetch([
-      routerRoute("agenda"),
-      (url) => {
-        if (!url.pathname.endsWith("/calendars/primary/events")) return undefined;
-        range = url.searchParams;
-        return Response.json({ items: [ev("a", now + 2 * HOUR, { location: "Офіс" })] });
-      },
-      (url) => (url.hostname === "openrouter.ai" ? Response.json({ choices: [{ message: { content: "Сьогодні одна зустріч." } }] }) : undefined),
+      (url) => (url.pathname.endsWith("/calendars/primary/events") ? Response.json({ items: [ev("a", now + HOUR, { location: "Офіс" })] }) : undefined),
     ]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, text("що в мене сьогодні?"));
-    await runJobs(env, jobs);
-    const answer = String(tgCalls(calls, "sendMessage").at(-1)!.text);
-    expect(answer).toContain("Сьогодні одна зустріч.");
-    expect(answer).toContain("Зустріч a");
-    expect(answer).toContain("Офіс");
-    expect(range!.get("singleEvents")).toBe("true");
+    await handleUpdate(env, text("/today"));
+    expect(jobs).toEqual([]);
+    expect(calls.some((c) => c.url.includes("openrouter.ai"))).toBe(false);
+    const msg = String(tgCalls(calls, "sendMessage").at(-1)!.text);
+    expect(msg).toContain("Сьогодні");
+    expect(msg).toContain("Зустріч a");
+    expect(msg).toContain("Офіс");
   });
 
-  it("anything else is a conversation, answered by the main model", async () => {
-    let model = "";
-    const calls = mockFetch([
-      routerRoute("chat"),
-      (url, init) => {
-        if (url.hostname !== "openrouter.ai") return undefined;
-        model = JSON.parse(init.bodyText).model;
-        return Response.json({ choices: [{ message: { content: "Привіт! Я ваш секретар." } }] });
-      },
-    ]);
+  it("menu buttons work like their commands", async () => {
+    await connectGoogle();
+    const calls = mockFetch([calendarList([])]);
+    const { env } = testEnv();
+    await handleUpdate(env, text("🗓 Завтра"));
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Завтра");
+    await handleUpdate(env, text("🕒 Вільні вікна"));
+    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toContain("Вільні вікна");
+  });
+
+  it("/start shows the persistent menu", async () => {
+    await connectGoogle();
+    const calls = mockFetch([]);
+    const { env } = testEnv();
+    await handleUpdate(env, text("/start"));
+    const markup = tgCalls(calls, "sendMessage").at(-1)!.reply_markup as { keyboard: { text: string }[][]; is_persistent: boolean };
+    expect(markup.is_persistent).toBe(true);
+    expect(markup.keyboard.flat().map((b) => b.text)).toContain("📝 Поставити зустріч");
+  });
+
+  it("«✉️ Пошта» waits for the request: the next message goes to the mail agent", async () => {
+    await connectGoogle();
+    mockFetch([]);
     const { env, jobs } = testEnv();
-    await handleUpdate(env, text("привіт, що ти вмієш?"));
-    await runJobs(env, jobs);
-    expect(model).toBe("test/card-model");
-    expect(String(tgCalls(calls, "sendMessage").at(-1)!.text)).toBe("Привіт! Я ваш секретар.");
+    await handleUpdate(env, text("✉️ Пошта"));
+    await handleUpdate(env, text("що нового від Івана?"));
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "mail", text: "що нового від Івана?", targetId: null }]);
   });
 
-  it("the default models are OpenAI (voice stays on a model that accepts Telegram's OGG)", async () => {
+  it("plain text without a command is still a meeting request (no router)", async () => {
+    await connectGoogle();
+    mockFetch([]);
+    const { env, jobs } = testEnv();
+    await handleUpdate(env, text("зустріч з Олегом у четвер о 15"));
+    expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
+  });
+
+  it("the default model is openai/gpt-6-luna-pro via OpenRouter; voice stays on a model that accepts OGG", async () => {
     const { loadConfig } = await import("../src/env");
     const c = loadConfig({ OWNER_TELEGRAM_ID: "1", TELEGRAM_BOT_TOKEN: "1:A", OPENROUTER_API_KEY: "k", PUBLIC_URL: "https://b.test" });
-    expect(c.LLM_MODEL).toMatch(/^openai\//);
-    expect(c.ROUTER_MODEL).toMatch(/^openai\//);
+    expect(c.LLM_MODEL).toBe("openai/gpt-6-luna-pro");
     expect(c.STT_MODEL).toBe("google/gemini-2.5-flash");
   });
 });

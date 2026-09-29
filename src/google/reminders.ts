@@ -1,4 +1,4 @@
-import { formatAgenda } from "../bot/assistant";
+import { formatAgenda } from "../bot/agenda";
 import type { Env } from "../env";
 import { DAY, formatRange, kyivLocalToDate, kyivParts, MINUTE } from "../lib/time";
 import { firstTime } from "../session";

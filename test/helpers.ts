@@ -18,7 +18,6 @@ export const testConfig: Config = {
   LLM_MODEL: "test/card-model",
   LLM_MODEL_SUMMARY: "test/summary-model",
   STT_MODEL: "test/audio-model",
-  ROUTER_MODEL: "test/router-model",
   REMINDER_MINUTES: 30,
   TELEGRAM_BOT_TOKEN: "tg-token",
   TELEGRAM_WEBHOOK_SECRET: "tg-secret",
@@ -222,14 +221,6 @@ export function tgCalls(calls: Call[], method: string): Record<string, unknown>[
 
 export function llmReply(json: unknown): Response {
   return Response.json({ choices: [{ message: { content: JSON.stringify(json) } }] });
-}
-
-/** Route: the router model's answer (bot/assistant.ts) — what a new free-text request is. */
-export function routerRoute(intent: string, extra: Record<string, unknown> = {}): Route {
-  return (url, init) =>
-    url.hostname === "openrouter.ai" && JSON.parse(init.bodyText).model === "test/router-model"
-      ? llmReply({ intent, from: null, to: null, ...extra })
-      : undefined;
 }
 
 /** Route: Google Calendar events.list returning `items` (for any listing). */

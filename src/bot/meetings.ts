@@ -13,7 +13,6 @@ import { hiddenData, hiddenSize, MAX_HIDDEN, readHidden } from "../telegram/hidd
 import type { InlineKeyboard, TgMessage } from "../telegram/types";
 import { createZoomMeeting } from "../zoom/client";
 import { type ActionQuestion, startAction } from "./actions";
-import { answerAgenda, answerChat, classify } from "./assistant";
 import {
   attendeesWithoutEmail,
   buildEventBody,
@@ -27,7 +26,7 @@ import {
   slotLabel,
 } from "./card";
 import { loadDirectory } from "./contacts";
-import { type MailQuestion, type MailRef, startMailDraft } from "./mail";
+import { type MailQuestion, type MailRef, looksLikeMailRequest, startMailDraft } from "./mail";
 import { loadOwner, type User } from "./owner";
 
 export type SourceType = "text" | "voice" | "forward" | "screenshot";
@@ -128,33 +127,19 @@ export async function handleOwnerText(
       return;
     case "mailq": {
       const q = context as MailQuestion;
-      await startMailDraft(env, chatId, `${q.src}\n${text}`, q.t);
+      await startMailDraft(env, chatId, `${q.src}\n${text}`.trim(), q.t);
       return;
     }
   }
 
-  // A new request: the router model decides what it is (see bot/assistant.ts).
-  await tg.typing(chatId);
-  await env.jobs.send({ type: "route", text, st: sourceType });
-}
-
-/** Job: routes a new free-text request — a meeting, the schedule, mail or a conversation. */
-export async function routeText(env: Env, text: string, sourceType: SourceType, now = new Date()): Promise<void> {
-  const chatId = env.OWNER_TELEGRAM_ID;
-  const route = await classify(env, text, now);
-  switch (route.intent) {
-    case "mail":
-      return startMailDraft(env, chatId, text);
-    case "agenda":
-      return answerAgenda(env, text, route, now);
-    case "chat":
-      return answerChat(env, text, now);
-    case "meeting": {
-      if (!(await requireCalendar(env, chatId))) return;
-      const placeholder = await new Telegram(env).send(chatId, "⏳ Готую картку зустрічі…");
-      return parseDraft(env, { id: randomId(9), src: text, st: sourceType }, placeholder.message_id, now);
-    }
+  // A new request: mail words go to Gmail, everything else becomes a meeting card.
+  if (looksLikeMailRequest(text)) {
+    await startMailDraft(env, chatId, text);
+    return;
   }
+  if (!(await requireCalendar(env, chatId))) return;
+  const placeholder = await tg.send(chatId, "⏳ Готую картку зустрічі…");
+  await env.jobs.send({ type: "parse", draft: { id: randomId(9), src: text, st: sourceType }, messageId: placeholder.message_id });
 }
 
 /** A forwarded message or a screenshot: collected into a batch, processed after a quiet period. */

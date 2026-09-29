@@ -22,7 +22,8 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - `api/` — Vercel Functions (thin wrappers); `vercel.json` — function limits, `/` redirect, daily cron.
 - `src/app.ts` — HTTP handlers, setup page, job runner wiring; `src/vercel.ts` — Vercel bootstrap.
 - `src/jobs.ts` — background jobs (run after the response, 3 attempts).
-- `src/bot/` — `assistant.ts` (the ROUTER_MODEL router for free text, schedule answers, chat), `meetings.ts` (meeting cards + the reply-context router), `actions.ts` (reschedule/cancel/note by reply),
+- `src/bot/` — commands and a persistent menu (`onboarding.ts` MENU); no AI router: plain text is a meeting request, mail
+  words go to Gmail, the LLM only works inside a flow. `agenda.ts` (/today /tomorrow /week /free), `meetings.ts` (meeting cards + the text router), `actions.ts` (reschedule/cancel/note by reply),
   `mail.ts` (Gmail agent), `onboarding.ts` (/start, /settings), `owner.ts` (profile from Telegram/Google/env),
   `contacts.ts` (names → emails from calendar attendees), `card.ts`.
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices, `reminders.ts` (morning digest,

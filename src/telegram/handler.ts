@@ -2,13 +2,14 @@ import { handleActionCallback } from "../bot/actions";
 import { loadDirectory } from "../bot/contacts";
 import { handleMailCallback, handleMailQuickAction, startMailDraft } from "../bot/mail";
 import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE_S, PHOTO_DEBOUNCE_S, photoLine } from "../bot/meetings";
-import { helpText, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
+import { helpText, MENU_ROWS, menuCommand, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
+import { showAgenda, showFreeSlots } from "../bot/agenda";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { connectWithCode } from "../google/connect";
 import { connectLink, hasGoogleAuth, parseGoogleAnswer, verifyState } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
-import { clearAnswer } from "../session";
+import { clearAnswer, expectAnswer } from "../session";
 import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
 import type { TgCallbackQuery, TgMessage, TgMessageOrigin, TgUpdate, TgUser } from "./types";
 
@@ -34,6 +35,8 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
 
   const text = msg.text?.trim() ?? "";
   if (text.startsWith("/")) return handleCommand(env, user, msg, text);
+  const button = menuCommand(text);
+  if (button) return handleCommand(env, user, msg, button);
   await handleOwnerMessage(env, user, msg);
 }
 
@@ -131,15 +134,26 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
         await sendConnectGoogle(env);
         return;
       }
-      await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.");
+      await tg.send(user.tg_id, "Опишіть зустріч текстом або голосом, перешліть переписку чи надішліть скріншот — я підготую картку.", {
+        forceReply: "з ким, коли, де…",
+      });
+      return;
+    case "/today":
+    case "/tomorrow":
+    case "/week":
+      await showAgenda(env, cmd.slice(1) as "today" | "tomorrow" | "week");
+      return;
+    case "/free":
+      await showFreeSlots(env);
       return;
     case "/mail": {
       const request = args.join(" ").trim();
       if (!request) {
-        await tg.send(
-          user.tg_id,
-          "Що зробити з поштою? Напишіть, напр.: <code>/mail перевір нові листи</code> або <code>/mail напиши Івану, що зустріч переносимо</code>.",
-        );
+        await tg.send(user.tg_id, "✉️ Що зробити з поштою? Напр.: <i>«перевір нові листи»</i>, <i>«напиши Івану, що зустріч переносимо»</i>.", {
+          keyboard: [[{ text: "📬 Нові листи", callback_data: "q:unread" }]],
+        });
+        // The next message is the mail request.
+        expectAnswer(msg.chat.id, { k: "mailq", src: "", t: null });
         return;
       }
       await startMailDraft(env, msg.chat.id, request);
@@ -156,7 +170,7 @@ async function handleCommand(env: Env, user: User, msg: TgMessage, text: string)
       return;
     }
   }
-  await tg.send(user.tg_id, helpText());
+  await tg.send(user.tg_id, helpText(), { menu: MENU_ROWS });
 }
 
 async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
@@ -170,6 +184,10 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
     else if (kind === "a") toast = await handleActionCallback(env, cq.message, a);
     else if (kind === "m") toast = await handleMailCallback(env, cq.message, a);
     else if (kind === "g") toast = await handleMailQuickAction(env, a, b);
+    else if (kind === "q" && a === "unread") {
+      clearAnswer(env.OWNER_TELEGRAM_ID);
+      await startMailDraft(env, env.OWNER_TELEGRAM_ID, "покажи непрочитані листи у вхідних");
+    }
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);
   }
