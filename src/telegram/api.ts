@@ -70,6 +70,16 @@ export class Telegram {
     await this.call("answerCallbackQuery", { callback_query_id: id, text });
   }
 
+  /**
+   * Shows "печатает…" until the returned function is called. Telegram hides the status after about 5 seconds, so it
+   * is repeated every 4 — the owner sees the bot working for the whole time an LLM call or a transcription takes.
+   */
+  keepTyping(chatId: number): () => void {
+    void this.typing(chatId);
+    const timer = setInterval(() => void this.typing(chatId), 4000);
+    return () => clearInterval(timer);
+  }
+
   async typing(chatId: number): Promise<void> {
     await this.call("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => undefined);
   }

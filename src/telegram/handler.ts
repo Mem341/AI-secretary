@@ -5,7 +5,8 @@ import { handleBatchInput, handleCardCallback, handleOwnerText, FORWARD_DEBOUNCE
 import { helpText, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
-import { hasGoogleAuth } from "../google/oauth";
+import { connectWithCode } from "../google/connect";
+import { connectLink, hasGoogleAuth, parseGoogleAnswer, verifyState } from "../google/oauth";
 import { formatTime, toKyivDate } from "../lib/time";
 import { clearAnswer } from "../session";
 import { esc, Telegram, TG_DOWNLOAD_LIMIT } from "./api";
@@ -104,6 +105,7 @@ async function handleOwnerMessage(env: Env, user: User, msg: TgMessage): Promise
   }
 
   const text = msg.text?.trim();
+  if (text && (await handleGoogleAnswer(env, msg, text))) return;
   if (text) await handleOwnerText(env, user, msg.chat.id, text, "text", msg.reply_to_message ?? null);
 }
 
@@ -171,4 +173,32 @@ async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   } finally {
     await tg.answerCallback(cq.id, toast).catch(() => undefined);
   }
+}
+
+/**
+ * Desktop app Google client: after consent the owner pastes the browser's address (http://127.0.0.1/?code=…) or
+ * the bare code. Returns false when the text is something else.
+ */
+async function handleGoogleAnswer(env: Env, msg: TgMessage, text: string): Promise<boolean> {
+  const answer = parseGoogleAnswer(text);
+  if (!answer) return false;
+  const tg = new Telegram(env);
+  const retry = { keyboard: [[{ text: "🔗 Підключити Google", url: await connectLink(env) }]] };
+  // The code is single-use, but it has no business staying in the chat.
+  await tg.call("deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => undefined);
+  if (answer.error || !answer.code) {
+    await tg.send(msg.chat.id, "Підключення Google скасовано. Спробувати ще раз:", retry);
+    return true;
+  }
+  if (answer.state && !(await verifyState(env, answer.state))) {
+    await tg.send(msg.chat.id, "Це посилання вже застаріло. Натисніть кнопку й підключіть Google ще раз:", retry);
+    return true;
+  }
+  await tg.typing(msg.chat.id);
+  try {
+    await connectWithCode(env, answer.code);
+  } catch {
+    await tg.send(msg.chat.id, "😔 Google не прийняв цей код (він діє кілька хвилин і лише один раз). Спробуйте ще раз:", retry);
+  }
+  return true;
 }

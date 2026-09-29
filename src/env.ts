@@ -24,6 +24,11 @@ export interface Config {
   /** Google Calendar; "" until the owner creates an OAuth client (see /api/setup). */
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  /**
+   * "desktop": a Desktop app OAuth client (recommended — nothing to register; after consent the owner sends the
+   * browser's address to the bot). "web": a Web application client with /api/oauth/callback as its redirect URI.
+   */
+  GOOGLE_OAUTH_MODE: "desktop" | "web";
   /** When set, Vercel Cron must send it as a Bearer token; "" leaves the (idempotent) daily cron open. */
   CRON_SECRET: string;
   /** Zoom Server-to-Server OAuth app; "" disables Zoom as a meeting format (Google Meet still works). */
@@ -99,8 +104,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     // Telegram allows only [A-Za-z0-9_-] in the webhook secret; hex fits.
     TELEGRAM_WEBHOOK_SECRET: val("TELEGRAM_WEBHOOK_SECRET") || derive(botToken, "telegram-webhook"),
     ENCRYPTION_KEY: val("ENCRYPTION_KEY") || derive(botToken, "encryption"),
-    GOOGLE_CLIENT_ID: val("GOOGLE_CLIENT_ID"),
-    GOOGLE_CLIENT_SECRET: val("GOOGLE_CLIENT_SECRET"),
+    ...googleClient(val),
     CRON_SECRET: val("CRON_SECRET"),
     ZOOM_ACCOUNT_ID: val("ZOOM_ACCOUNT_ID"),
     ZOOM_CLIENT_ID: val("ZOOM_CLIENT_ID"),
@@ -112,6 +116,32 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     DEFAULT_DURATION_MIN: durationVal(val("DEFAULT_DURATION_MIN")),
     DEFAULT_FORMAT: formatVal(val("DEFAULT_FORMAT")),
     DEFAULT_ADDRESS: val("DEFAULT_ADDRESS"),
+  };
+}
+
+/**
+ * The Google OAuth client: GOOGLE_CLIENT_JSON (the JSON file downloaded from Google Cloud, pasted as is) or
+ * GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET (+ GOOGLE_CLIENT_TYPE, default "web").
+ */
+function googleClient(val: (k: string) => string): Pick<Config, "GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "GOOGLE_OAUTH_MODE"> {
+  const raw = val("GOOGLE_CLIENT_JSON");
+  if (raw) {
+    let json: { installed?: { client_id?: string; client_secret?: string }; web?: { client_id?: string; client_secret?: string } };
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      throw new ConfigError("GOOGLE_CLIENT_JSON must be the content of the JSON file downloaded from Google Cloud (Clients → Download JSON)");
+    }
+    const client = json.installed ?? json.web;
+    if (!client?.client_id || !client.client_secret) {
+      throw new ConfigError("GOOGLE_CLIENT_JSON has no client_id / client_secret: download the JSON of the OAuth client again");
+    }
+    return { GOOGLE_CLIENT_ID: client.client_id, GOOGLE_CLIENT_SECRET: client.client_secret, GOOGLE_OAUTH_MODE: json.installed ? "desktop" : "web" };
+  }
+  return {
+    GOOGLE_CLIENT_ID: val("GOOGLE_CLIENT_ID"),
+    GOOGLE_CLIENT_SECRET: val("GOOGLE_CLIENT_SECRET"),
+    GOOGLE_OAUTH_MODE: val("GOOGLE_CLIENT_TYPE") === "desktop" ? "desktop" : "web",
   };
 }
 
@@ -140,7 +170,13 @@ export function gmailPushConfigured(env: Config): boolean {
   return !!env.GMAIL_PUBSUB_TOPIC;
 }
 
-/** Where Google must redirect after consent; the owner pastes it into the OAuth client. */
+/**
+ * A Desktop app client redirects to the owner's own computer (loopback). Nothing listens there, so the browser
+ * shows an error page — its address, with the code, is what the owner sends to the bot. Any port is allowed.
+ */
+export const DESKTOP_REDIRECT_URI = "http://127.0.0.1:53682";
+
+/** Where Google redirects after consent: the loopback address (Desktop app) or this deployment's callback (Web). */
 export function googleRedirectUri(env: Config): string {
-  return `${env.PUBLIC_URL}/api/oauth/callback`;
+  return env.GOOGLE_OAUTH_MODE === "desktop" ? DESKTOP_REDIRECT_URI : `${env.PUBLIC_URL}/api/oauth/callback`;
 }

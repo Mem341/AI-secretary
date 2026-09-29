@@ -21,7 +21,7 @@
 
 ## 🚀 Розгортання за 5 хвилин
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY%2CGOOGLE_CLIENT_ID%2CGOOGLE_CLIENT_SECRET&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key%2C+Google+OAuth+client+ID+and+secret&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary&env=OWNER_TELEGRAM_ID%2CTELEGRAM_BOT_TOKEN%2COPENROUTER_API_KEY%2CGOOGLE_CLIENT_JSON&envDescription=Your+numeric+Telegram+ID+%28%40userinfobot%29%2C+bot+token+%28%40BotFather%29%2C+OpenRouter+API+key%2C+the+downloaded+JSON+of+a+Google+Desktop+app+OAuth+client&envLink=https%3A%2F%2Fgithub.com%2FMem341%2FAI-secretary%23deploy&project-name=ai-secretary&repository-name=ai-secretary)
 
 1. **Підготуйте чотири речі** (покроково — [docs/what-you-need.md](docs/what-you-need.md)):
 
@@ -30,16 +30,16 @@
    | `TELEGRAM_BOT_TOKEN` | токен вашого бота | [@BotFather](https://t.me/BotFather) → `/newbot` |
    | `OWNER_TELEGRAM_ID` | ваш **числовий** Telegram ID | напишіть [@userinfobot](https://t.me/userinfobot) |
    | `OPENROUTER_API_KEY` | ключ до ШІ | [openrouter.ai/keys](https://openrouter.ai/keys) |
-   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | доступ до Google Calendar і Gmail | Google Cloud Console, 5 хвилин — [інструкція](docs/what-you-need.md#4-google-client-id-і-client-secret) |
+   | `GOOGLE_CLIENT_JSON` | JSON-файл Google-клієнта типу **Desktop app** (доступ до Calendar і Gmail) | Google Cloud Console, 5 хвилин — [інструкція](docs/what-you-need.md#4-google-json-клієнта-desktop-app) |
 
    Більше нічого не треба — **навіть бази даних**: голосові розпізнає той самий OpenRouter. Zoom і миттєві сповіщення про пошту —
    необовʼязкові, додаються, коли захочете.
 
 2. **Натисніть «Deploy with Vercel»** і вставте ці значення.
-3. **Відкрийте свій сайт** `https://<ваш-проєкт>.vercel.app` — відкриється сторінка налаштування. Вона сама
-   підключить Telegram-бота і покаже ваш **Redirect URI** — додайте його в Google-клієнт (Clients → Authorized
-   redirect URIs).
-4. **Напишіть своєму боту `/start`** і натисніть «Підключити Google». Готово.
+3. **Відкрийте свій сайт** `https://<ваш-проєкт>.vercel.app` — сторінка налаштування сама підключить Telegram-бота.
+   Redirect URI налаштовувати не треба.
+4. **Напишіть своєму боту `/start`** → «Підключити Google» → увійдіть у Google. Браузер покаже сторінку з помилкою
+   на адресі `http://127.0.0.1…` — так і має бути: скопіюйте цю адресу й надішліть боту. Готово.
 
 > 💡 Можна доручити все агенту **Claude Code** з підключеним Vercel MCP: «розгорни бота на Vercel». Він візьме
 > інструкцію з `.claude/skills/deploy-vercel/SKILL.md`, спитає рівно ці 4 речі, перевірить їх і зробить решту сам.

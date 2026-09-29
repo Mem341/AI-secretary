@@ -338,3 +338,90 @@ describe("voice", () => {
     expect(jobs.map((j) => j.body.type)).toEqual(["parse"]);
   });
 });
+
+describe("Google via a Desktop app client (the downloaded JSON)", () => {
+  it("reads GOOGLE_CLIENT_JSON: installed → desktop, web → web; rejects anything else", async () => {
+    const { loadConfig, ConfigError } = await import("../src/env");
+    const base = { OWNER_TELEGRAM_ID: "1", TELEGRAM_BOT_TOKEN: "1:A", OPENROUTER_API_KEY: "k", PUBLIC_URL: "https://b.test" };
+    const desktop = loadConfig({ ...base, GOOGLE_CLIENT_JSON: JSON.stringify({ installed: { client_id: "d.apps.googleusercontent.com", client_secret: "GOCSPX-d" } }) });
+    expect(desktop).toMatchObject({ GOOGLE_CLIENT_ID: "d.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "GOCSPX-d", GOOGLE_OAUTH_MODE: "desktop" });
+    const web = loadConfig({ ...base, GOOGLE_CLIENT_JSON: JSON.stringify({ web: { client_id: "w", client_secret: "s" } }) });
+    expect(web.GOOGLE_OAUTH_MODE).toBe("web");
+    expect(() => loadConfig({ ...base, GOOGLE_CLIENT_JSON: "{oops" })).toThrow(ConfigError);
+  });
+
+  it("the connect link opens a friendly page with the Google button (loopback redirect), not a raw error", async () => {
+    mockFetch([(url) => (url.pathname.endsWith("/getMe") ? Response.json({ ok: true, result: { username: "my_bot" } }) : undefined)]);
+    const { oauthStart } = await import("../src/app");
+    const { env } = testEnv({ GOOGLE_OAUTH_MODE: "desktop" });
+    const res = await oauthStart(new Request(await connectLink(env)), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Увійти через Google");
+    expect(html).toContain("@my_bot");
+    const google = new URL(/href="(https:\/\/accounts\.google\.com[^"]+)"/.exec(html)![1]!.replace(/&amp;/g, "&"));
+    expect(google.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:53682");
+  });
+
+  it("the owner pastes the browser address; the bot exchanges the code, pins the grant and deletes the message", async () => {
+    let tokenBody = "";
+    const calls = mockFetch([
+      (url, init) => {
+        if (url.hostname !== "oauth2.googleapis.com") return undefined;
+        tokenBody = init.bodyText;
+        return Response.json({ access_token: "a", expires_in: 3600, refresh_token: "r", scope: "calendar.events gmail.modify" });
+      },
+    ]);
+    const { env, jobs } = testEnv({ GOOGLE_OAUTH_MODE: "desktop" });
+    const state = new URL(await connectLink(env)).searchParams.get("state")!;
+    const pasted = `http://127.0.0.1:53682/?state=${encodeURIComponent(state)}&code=4/0AbCdEf&scope=calendar`;
+    await handleUpdate(env, textUpdate(OWNER, pasted));
+    const params = new URLSearchParams(tokenBody);
+    expect(params.get("code")).toBe("4/0AbCdEf");
+    expect(params.get("redirect_uri")).toBe("http://127.0.0.1:53682");
+    expect(tg.pinned!.text).toContain("Google підключено");
+    expect(tgCalls(calls, "deleteMessage")).toHaveLength(1);
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "connected", gmail: true }]);
+  });
+
+  it("an outdated or cancelled answer asks to try again instead of failing", async () => {
+    const calls = mockFetch([]);
+    const { env, jobs } = testEnv({ GOOGLE_OAUTH_MODE: "desktop" });
+    await handleUpdate(env, textUpdate(OWNER, "http://127.0.0.1:53682/?state=forged&code=4/0AbCdEf"));
+    await handleUpdate(env, textUpdate(OWNER, "http://127.0.0.1:53682/?error=access_denied"));
+    const texts = tgCalls(calls, "sendMessage").map((m) => String(m.text));
+    expect(texts[0]).toContain("застаріло");
+    expect(texts[1]).toContain("скасовано");
+    expect(jobs).toEqual([]);
+  });
+});
+
+describe("typing indicator", () => {
+  it("shows «печатает…» for as long as a job the owner waits for is running", async () => {
+    vi.useFakeTimers();
+    try {
+      await connectGoogle();
+      let release!: () => void;
+      const calls = mockFetch([
+        calendarList([]),
+        (url) =>
+          url.hostname === "openrouter.ai"
+            ? new Promise<Response>((r) => (release = () => r(llmReply({ ...CARD, start: inDays(1, 10) }))))
+            : undefined,
+      ]);
+      const { env, jobs } = testEnv();
+      const running = runJobs(env, [{ body: { type: "parse", draft: { id: "d1", src: "зустріч", st: "text" }, messageId: null } }]);
+      await vi.advanceTimersByTimeAsync(9000);
+      const during = tgCalls(calls, "sendChatAction").length;
+      expect(during).toBeGreaterThanOrEqual(3);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      await running;
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(tgCalls(calls, "sendChatAction").length).toBe(during);
+      expect(jobs).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -8,12 +8,13 @@ import {
   zoomConfigured,
 } from "./env";
 import { decodePush, gmailPushToken, type PubSubPush, startGmailWatch } from "./google/gmailPush";
-import { completeAuth, connectLink, forgetGoogleAuth, googleAuthUrl, hasGmailScope, hasGoogleAuth, verifyState } from "./google/oauth";
+import { botUsername, connectWithCode } from "./google/connect";
+import { googleAuthUrl, hasGmailScope, hasGoogleAuth, verifyState } from "./google/oauth";
 import { isOurChannel } from "./google/sync";
 import { type Job, runWithRetry } from "./jobs";
 import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
-import { code, renderSetupPage, type SetupStep } from "./setup";
+import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList } from "./setup";
 import { esc, Telegram } from "./telegram/api";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
@@ -44,11 +45,10 @@ export function createEnv(config: Config, runtime: Runtime): Env {
   return env;
 }
 
-function page(title: string, body: string, status = 200): Response {
-  const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)}</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;text-align:center;color:#1f2328}
-h1{font-size:1.4rem}p{color:#57606a;line-height:1.5}</style></head><body><h1>${esc(title)}</h1><p>${esc(body)}</p></body></html>`;
-  return new Response(html, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+/** "Back to Telegram" button for the result pages. */
+async function backToBot(env: Env): Promise<{ href: string; label: string } | undefined> {
+  const username = await botUsername(env);
+  return username ? { href: `https://t.me/${username}`, label: "Повернутися в Telegram" } : undefined;
 }
 
 /** POST /api/telegram — Telegram webhook. Answers at once; the update is handled in the background. */
@@ -69,47 +69,67 @@ export async function telegramWebhook(req: Request, env: Env, runtime: Runtime):
   return new Response("ok");
 }
 
-/** GET /api/oauth/start — redirects to Google's consent screen. */
+/**
+ * GET /api/oauth/start — the owner's "Підключити Google" link. Web client: straight to Google. Desktop app client:
+ * a short, friendly page first, because after Google the browser lands on the owner's own computer (an error page)
+ * and its address has to be sent to the bot.
+ */
 export async function oauthStart(req: Request, env: Env): Promise<Response> {
   if (!googleConfigured(env)) return Response.redirect(`${env.PUBLIC_URL}/api/setup`, 302);
   const state = new URL(req.url).searchParams.get("state") ?? "";
   if (!(await verifyState(env, state))) {
-    return page("Посилання застаріло", "Відкрийте /settings у боті й натисніть «Підключити Google» ще раз.", 400);
+    return messagePage("⏳", "Посилання застаріло", "Напишіть боту /settings і натисніть «Підключити Google» ще раз.", 400, await backToBot(env));
   }
-  return Response.redirect(googleAuthUrl(env, state), 302);
+  if (env.GOOGLE_OAUTH_MODE !== "desktop") return Response.redirect(googleAuthUrl(env, state), 302);
+  const bot = await botUsername(env);
+  const botLink = bot ? `<a href="https://t.me/${esc(bot)}">@${esc(bot)}</a>` : "боту";
+  return renderPage(
+    "Підключення Google",
+    `<header><h1>🔗 Підключення Google</h1><p>Три кроки — хвилина часу. Бот отримає доступ до вашого календаря й пошти.</p></header>
+${stepsList([
+  {
+    title: "Увійдіть у Google",
+    details: `Оберіть акаунт і дозвольте доступ до календаря та пошти (поставте всі галочки).
+Якщо Google попередить «застосунок не перевірено» — натисніть <b>Додатково</b> → <b>Перейти</b>: це ваш власний бот.<br>
+<a class="button" href="${esc(googleAuthUrl(env, state))}">Увійти через Google</a>`,
+  },
+  {
+    title: "Браузер покаже сторінку з помилкою — так і треба",
+    details: `Після входу відкриється адреса, що починається з ${code("http://127.0.0.1")}, і браузер напише
+«не вдається отримати доступ до сайту». Нічого не зламалось: у цій адресі — одноразовий код доступу.`,
+  },
+  {
+    title: "Скопіюйте адресу з адресного рядка й надішліть боту",
+    details: `Надішліть її повідомленням ${botLink} у Telegram — бот підключиться сам і відповість «✅ Google підключено».
+Код діє кілька хвилин.`,
+  },
+])}`,
+  );
 }
 
-/** GET /api/oauth/callback — keeps the grant in the chat, subscribes to push, greets the owner (spec 4.1). */
+/** GET /api/oauth/callback — Web client: keeps the grant in the chat, subscribes to push, greets the owner (spec 4.1). */
 export async function oauthCallback(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
+  const back = await backToBot(env);
   if (!(await verifyState(env, url.searchParams.get("state") ?? ""))) {
-    return page("Посилання застаріло", "Поверніться в Telegram і спробуйте підключити Google ще раз.", 400);
+    return messagePage("⏳", "Посилання застаріло", "Поверніться в Telegram і спробуйте підключити Google ще раз.", 400, back);
   }
   const tg = new Telegram(env);
-  const owner = env.OWNER_TELEGRAM_ID;
-
   const code = url.searchParams.get("code");
   if (url.searchParams.get("error") || !code) {
-    await tg.send(owner, "Підключення Google скасовано. Спробувати ще раз — /settings.").catch(() => undefined);
-    return page("Підключення скасовано", "Поверніться в Telegram.");
+    await tg.send(env.OWNER_TELEGRAM_ID, "Підключення Google скасовано. Спробувати ще раз — /settings.").catch(() => undefined);
+    return messagePage("✖️", "Підключення скасовано", "Нічого не змінилось. Спробувати ще раз можна в боті: /settings.", 200, back);
   }
-
   try {
-    const { scope } = await completeAuth(env, code);
-    if (!scope.includes("calendar.events")) {
-      await forgetGoogleAuth(env);
-      await tg.send(owner, "Потрібен доступ до подій календаря — поставте галочку на екрані Google.", {
-        keyboard: [[{ text: "🔗 Спробувати ще раз", url: await connectLink(env) }]],
-      });
-      return page("Недостатньо доступу", "Поверніться в Telegram і надайте доступ до календаря.", 400);
+    if ((await connectWithCode(env, code)) === "no_calendar") {
+      return messagePage("⚠️", "Потрібен доступ до календаря", "Поверніться в Telegram і надайте доступ до календаря.", 400, back);
     }
-    await env.jobs.send({ type: "connected", gmail: scope.includes("gmail.modify") });
   } catch (err) {
     await logError(env, "oauth.callback", err);
-    await tg.send(owner, "😔 Не вдалося підключити Google. Спробуйте ще раз через /settings.").catch(() => undefined);
-    return page("Помилка", "Не вдалося підключити Google. Спробуйте ще раз.", 500);
+    await tg.send(env.OWNER_TELEGRAM_ID, "😔 Не вдалося підключити Google. Спробуйте ще раз через /settings.").catch(() => undefined);
+    return messagePage("😔", "Не вдалося підключити Google", "Спробуйте ще раз через /settings у боті.", 500, back);
   }
-  return page("Google підключено ✅", "Можна повертатися в Telegram.");
+  return messagePage("✅", "Google підключено", "Можна повертатися в Telegram — бот уже надіслав підтвердження.", 200, back);
 }
 
 /** POST /api/gcal-push — Google push (spec section 3): only a "something changed" signal. */
@@ -236,22 +256,23 @@ export async function setupPage(_req: Request, env: Env): Promise<Response> {
     });
   }
 
-  const redirect = googleRedirectUri(env);
+  const googleOk = googleConfigured(env)
+    ? env.GOOGLE_OAUTH_MODE === "desktop"
+      ? "Google-клієнт (Desktop app) задано. Redirect URI не потрібен — у боті натисніть «Підключити Google»."
+      : `Google-клієнт (Web application) задано. Додайте в нього Authorized redirect URI (Google Cloud Console → Clients → ваш клієнт): ${code(googleRedirectUri(env))}`
+    : null;
   steps.push(
-    googleConfigured(env)
-      ? { status: "ok", title: "Google Calendar і Gmail", details: `OAuth-клієнт задано. Додайте в нього цей Authorized redirect URI (Google Cloud Console → Clients → ваш клієнт): ${code(redirect)}` }
+    googleOk
+      ? { status: "ok", title: "Google Calendar і Gmail", details: googleOk }
       : {
           status: "todo",
           title: "Google Calendar і Gmail",
-          details: `Створіть OAuth-клієнт, щоб бот працював з вашим календарем і поштою:<ol>
-<li>У своєму проєкті Google Cloud увімкніть <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</a> і <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">Gmail API</a>.</li>
-<li><a href="https://console.cloud.google.com/auth/overview">OAuth consent screen</a>: для Google Workspace — <b>Internal</b> (найпростіше); для звичайного Gmail — <b>External</b>.</li>
-<li><a href="https://console.cloud.google.com/apis/credentials">Credentials</a> → Create credentials → OAuth client ID → <b>Web application</b>, Authorized redirect URI: ${code(redirect)}</li>
-<li>Додайте змінні ${code("GOOGLE_CLIENT_ID")} і ${code("GOOGLE_CLIENT_SECRET")} у налаштуваннях хостингу та перерозгорніть.</li></ol>
-<b>Про доступ до пошти.</b> Gmail — «restricted» дозвіл Google. Для Workspace (Internal) обмежень немає. Для звичайного Gmail
-(External) натисніть <b>Publish app</b>: під час входу Google покаже «застосунок не перевірено» — <i>Advanced → Continue</i>
-(для особистого використання це нормально, ліміт 100 користувачів). У режимі <b>Testing</b> Google вимагає перепідключення раз на
-7 днів (бот нагадає кнопкою). Щоб прибрати попередження зовсім — верифікація застосунку в Google.`,
+          details: `Створіть Google-клієнт — 5 хвилин, покроково в <a href="https://github.com/Mem341/AI-secretary/blob/main/docs/what-you-need.md#4-google-json-клієнта-desktop-app">інструкції</a>:<ol>
+<li>У проєкті Google Cloud увімкніть <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</a> і <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com">Gmail API</a>.</li>
+<li><a href="https://console.cloud.google.com/auth/overview">Google Auth Platform</a> → Get started: для Google Workspace — <b>Internal</b>; для звичайного Gmail — <b>External</b>, потім Audience → <b>Publish app</b>.</li>
+<li><a href="https://console.cloud.google.com/auth/clients">Clients</a> → Create client → <b>Desktop app</b> → Create → <b>Download JSON</b>.</li>
+<li>Вміст цього файлу цілком вставте у змінну ${code("GOOGLE_CLIENT_JSON")} (Vercel → Settings → Environment Variables) і перерозгорніть.</li></ol>
+Redirect URI налаштовувати не треба.`,
         },
   );
 

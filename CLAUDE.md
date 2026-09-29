@@ -13,7 +13,7 @@ report as "Реализовано / Не реализовано".
 Vercel only (no AWS, no Cloudflare): `.claude/skills/deploy-vercel/SKILL.md` (`/deploy-vercel`).
 
 The skill collects exactly four things from the owner — Telegram bot token, their Telegram ID, OpenRouter key,
-Google OAuth client ID + secret — validates them, and never asks about optional extras.
+the JSON of a Google "Desktop app" OAuth client (`GOOGLE_CLIENT_JSON`, no redirect URI) — validates them, and never asks about optional extras.
 The human version of that list with step-by-step instructions is `docs/what-you-need.md`. After any deploy, the `/api/setup` page registers the Telegram
 webhook and shows what is left to configure (Google, Gmail push, Zoom).
 

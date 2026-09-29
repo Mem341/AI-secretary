@@ -19,8 +19,12 @@ Read this first. These rules override your own judgement about what to ask or pr
 | `TELEGRAM_BOT_TOKEN` | bot token | @BotFather → `/newbot` |
 | `OWNER_TELEGRAM_ID` | their numeric Telegram ID (the only person the bot answers) | @userinfobot |
 | `OPENROUTER_API_KEY` | AI key | <https://openrouter.ai/keys> |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID | `docs/what-you-need.md` §4 |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret | same |
+| `GOOGLE_CLIENT_JSON` | the JSON file of a Google OAuth client of type **Desktop app** (`client_secret_….json`) | `docs/what-you-need.md` §4 |
+
+Put the Google JSON into `GOOGLE_CLIENT_JSON` **as is** (whole content, one line is fine: `node -e
+'process.stdout.write(JSON.stringify(require(process.argv[1])))' client_secret.json`). Check it has
+`installed.client_id`. Do not split it into `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`. A Desktop app client needs
+**no redirect URI** — never ask the user to configure one.
 
 Step-by-step instructions for each value, to send when the user does not have it: `docs/what-you-need.md`.
 
@@ -54,14 +58,13 @@ Talk in the user's language. No explanations of internals, no tables of alternat
 ```
 Реализовано:
 ✅ Проект на Vercel создан
-✅ Переменные заданы: TELEGRAM_BOT_TOKEN, OWNER_TELEGRAM_ID, OPENROUTER_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+✅ Переменные заданы: TELEGRAM_BOT_TOKEN, OWNER_TELEGRAM_ID, OPENROUTER_API_KEY, GOOGLE_CLIENT_JSON
 ✅ Задеплоено: https://<domain>
 ✅ Вебхук Telegram зарегистрирован
 
 Не реализовано:
-❌ Redirect URI в Google — сделайте вы: Google Cloud Console → Clients → ваш клиент →
-   Authorized redirect URIs → добавьте https://<domain>/api/oauth/callback → Save
-❌ Google не подключён — напишите боту /start и нажмите «Подключить Google»
+❌ Google не подключён — напишите боту /start → «Подключить Google» → войдите в Google → скопируйте адрес
+   из браузера (http://127.0.0.1…, страница с ошибкой — так и надо) и отправьте боту
 ```
 
 A line goes into "Не реализовано" only as `❌ <what> — <one action the user must take>`.
