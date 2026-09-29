@@ -33,8 +33,8 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
   format with `accept:{id}` / `decline:{id}` buttons), `reminders.ts` (morning digest,
   reminders via /api/cron/reminders), Gmail API + Pub/Sub push (`gmailPush.ts`: n8n WF3 "📧 Нова пошта!" format).
-- `vercel.json` crons stay daily (Vercel Hobby rejects more frequent ones); /api/cron/reminders is for an optional
-  5-minute cron.
+- `vercel.json` crons stay daily (Vercel Hobby rejects more frequent ones); /api/cron/reminders (reminders 30 and 10 min before,
+  plain code, no AI) is for an optional 5-minute pinger such as cron-job.org.
 - `src/telegram/hidden.ts` — data hidden inside the bot's own messages; `src/session.ts` — short-lived
   in-instance memory; `src/zoom/` — Zoom API.
 
