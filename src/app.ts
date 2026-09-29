@@ -216,10 +216,14 @@ export async function healthCheck(_req: Request, env: Env): Promise<Response> {
 }
 
 const BOT_COMMANDS = [
-  { command: "new", description: "Нова зустріч" },
+  { command: "new", description: "Поставити зустріч" },
+  { command: "today", description: "Зустрічі на сьогодні" },
+  { command: "tomorrow", description: "Зустрічі на завтра" },
+  { command: "week", description: "Зустрічі на тиждень" },
+  { command: "free", description: "Вільні вікна" },
   { command: "mail", description: "Пошта Gmail" },
-  { command: "contacts", description: "Адресна книга" },
-  { command: "settings", description: "Профіль і календар" },
+  { command: "contacts", description: "Кого я знаю з календаря" },
+  { command: "settings", description: "Налаштування" },
   { command: "cancel", description: "Скасувати поточну дію" },
   { command: "help", description: "Що вміє бот" },
 ];

@@ -32,7 +32,7 @@ Step-by-step instructions for each value, to send when the user does not have it
 - technical questions: architecture, platforms, services, "do we use X or Y?", "shall I port?";
 - for approval of a plan;
 - about a database, queues, storage, cron, frameworks;
-- about optional extras: Zoom, Gmail Pub/Sub, `OWNER_*` / `DEFAULT_*` / `LLM_MODEL` / `ROUTER_MODEL` / `REMINDER_MINUTES`, a reminders cron. Set them only if the user
+- about optional extras: Zoom, Gmail Pub/Sub, `OWNER_*` / `DEFAULT_*` / `LLM_MODEL` / `REMINDER_MINUTES`, a reminders cron. Set them only if the user
   gives them on their own.
 
 ## 3. Do everything else yourself

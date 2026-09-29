@@ -11,6 +11,8 @@ export interface SendOptions {
   /** Show a one-time reply keyboard (e.g. "share contact"). */
   replyKeyboard?: { text: string; request_contact?: boolean }[][];
   removeKeyboard?: boolean;
+  /** The persistent menu under the input field (reply keyboard); its buttons send their text. */
+  menu?: string[][];
   /** Opens the reply field on the owner's side, so the answer comes back as a reply to this message. */
   forceReply?: string;
 }
@@ -32,6 +34,7 @@ export class Telegram {
   private markup(opts: SendOptions): Record<string, unknown> | undefined {
     if (opts.forceReply !== undefined) return { force_reply: true, input_field_placeholder: opts.forceReply || undefined };
     if (opts.keyboard) return { inline_keyboard: opts.keyboard };
+    if (opts.menu) return { keyboard: opts.menu.map((row) => row.map((text) => ({ text }))), resize_keyboard: true, is_persistent: true };
     if (opts.replyKeyboard) return { keyboard: opts.replyKeyboard, resize_keyboard: true, one_time_keyboard: true };
     if (opts.removeKeyboard) return { remove_keyboard: true };
     return undefined;
