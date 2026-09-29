@@ -13,6 +13,7 @@ import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
 import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList } from "./setup";
 import { esc, Telegram } from "./telegram/api";
+import { checkReminders } from "./google/reminders";
 import { firstTime } from "./session";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
@@ -200,8 +201,15 @@ export async function remindersCron(req: Request, env: Env): Promise<Response> {
   if (env.CRON_SECRET && !safeEqual(req.headers.get("authorization"), `Bearer ${env.CRON_SECRET}`)) {
     return new Response("unauthorized", { status: 401 });
   }
-  await env.jobs.send({ type: "reminders" });
-  return Response.json({ ok: true });
+  // Runs right here (a few Google calls), so the answer — seen by the pinger's log or in a browser — tells what
+  // happened: the reminder times, the meetings in the window and what was sent.
+  if (!(await hasGoogleAuth(env).catch(() => false))) return Response.json({ ok: false, error: "Google is not connected" });
+  try {
+    return Response.json({ ok: true, ...(await checkReminders(env)) });
+  } catch (err) {
+    await logError(env, "reminders", err);
+    return Response.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
 }
 
 /**
