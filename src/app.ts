@@ -13,6 +13,7 @@ import { safeEqual } from "./lib/crypto";
 import { logError } from "./lib/errors";
 import { code, messagePage, renderPage, renderSetupPage, type SetupStep, stepsList } from "./setup";
 import { esc, Telegram } from "./telegram/api";
+import { firstTime } from "./session";
 import { handleUpdate } from "./telegram/handler";
 import type { TgUpdate } from "./telegram/types";
 
@@ -48,12 +49,23 @@ async function backToBot(env: Env): Promise<{ href: string; label: string } | un
   return username ? { href: `https://t.me/${username}`, label: "Повернутися в Telegram" } : undefined;
 }
 
+/**
+ * Reminders need a clock, and a free Vercel project has none finer than a day. Besides the 5-minute pinger
+ * (/api/cron/reminders), any traffic the bot gets anyway — a Telegram message, a calendar or Gmail push — also checks
+ * for due reminders, at most every 3 minutes per instance. Reminders are marked on the event, so double checks never
+ * send twice.
+ */
+async function nudgeReminders(env: Env): Promise<void> {
+  if (firstTime("nudge:reminders", 3 * 60_000)) await env.jobs.send({ type: "reminders" }).catch(() => undefined);
+}
+
 /** POST /api/telegram — Telegram webhook. Answers at once; the update is handled in the background. */
 export async function telegramWebhook(req: Request, env: Env, runtime: Runtime): Promise<Response> {
   if (!safeEqual(req.headers.get("x-telegram-bot-api-secret-token"), env.TELEGRAM_WEBHOOK_SECRET)) {
     return new Response("forbidden", { status: 403 });
   }
   const update = (await req.json()) as TgUpdate;
+  await nudgeReminders(env);
   runtime.defer(
     handleUpdate(env, update).catch(async (err) => {
       await logError(env, "telegram.update", err);
@@ -138,7 +150,10 @@ export async function gcalPush(req: Request, env: Env): Promise<Response> {
   if (!channelId) return new Response("bad request", { status: 400 });
   // Unknown or foreign channel: acknowledge so Google does not retry; it stops at expiration.
   if (!isOurChannel(env, channelId, req.headers.get("x-goog-channel-token"))) return new Response("ok");
-  if (req.headers.get("x-goog-resource-state") !== "sync") await env.jobs.send({ type: "sync" });
+  if (req.headers.get("x-goog-resource-state") !== "sync") {
+    await env.jobs.send({ type: "sync" });
+    await nudgeReminders(env);
+  }
   return new Response("ok");
 }
 
@@ -152,6 +167,7 @@ export async function gmailPush(req: Request, env: Env): Promise<Response> {
   const note = decodePush(body);
   if (note?.emailAddress) console.log("Gmail push", note.emailAddress);
   await env.jobs.send({ type: "gmail_sync" });
+  await nudgeReminders(env);
   return new Response(null, { status: 204 });
 }
 
