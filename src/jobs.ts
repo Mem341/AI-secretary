@@ -3,7 +3,8 @@ import { type BitrixAction, runBitrixAction } from "./bitrix/menu";
 import { helpText } from "./bot/onboarding";
 import { digestEnabled } from "./bot/settings";
 import { type Env, gmailPushConfigured } from "./env";
-import { gmailSync, startGmailWatch } from "./google/gmailPush";
+import { gmailSync } from "./google/gmailPush";
+import { reportWake, setupGoogleWake } from "./google/wake";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
 import { sendDigest, sendReminders } from "./google/reminders";
 import { markUpcoming, startWatch, syncRecent } from "./google/sync";
@@ -36,6 +37,8 @@ export type Job =
   | { type: "gmail_sync" }
   /** Telegram reminders shortly before meetings (/api/cron/reminders). */
   | { type: "reminders" }
+  /** /settings → reminders: set Google up as the clock again and say how it went. */
+  | { type: "wake"; chatId: number }
   /** A /bitrix menu button: task list, analytics or the Excel report. */
   | { type: "bitrix"; chatId: number; action: BitrixAction };
 
@@ -101,10 +104,8 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     case "connected": {
       await startWatch(env);
       const count = await markUpcoming(env);
-      // New-mail notifications are optional: a Pub/Sub problem must not fail the connection.
-      if (job.gmail && gmailPushConfigured(env)) {
-        await startGmailWatch(env, true).catch((err) => logError(env, "gmail.watch", err));
-      }
+      // Google becomes the clock (new mail and meeting reminders); a problem there must not fail the connection.
+      if (job.gmail) await setupGoogleWake(env, true).catch((err) => logError(env, "google.wake", err));
       await new Telegram(env).send(env.OWNER_TELEGRAM_ID, `✅ Google підключено. Подій на найближчі 30 днів: ${count}.\n\n${helpText()}`);
       return;
     }
@@ -113,10 +114,9 @@ export async function runJob(env: Env, job: Job): Promise<void> {
       if (await digestEnabled(env)) await sendDigest(env).catch((err) => logError(env, "digest", err));
       await startWatch(env);
       await markUpcoming(env);
-      // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.
-      if (gmailPushConfigured(env) && (await hasGmailScope(env))) {
-        await startGmailWatch(env).catch((err) => logError(env, "gmail.watch", err));
-      }
+      // A Gmail watch lapses after 7 days; renewing daily keeps mail and reminders flowing, and new meetings of the
+      // coming week get their reminder emails.
+      await setupGoogleWake(env).catch((err) => logError(env, "google.wake", err));
       return;
     case "gmail_sync":
       if (await hasGmailScope(env)) await gmailSync(env);
@@ -124,6 +124,8 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     case "reminders":
       if (await hasGoogleAuth(env)) await sendReminders(env);
       return;
+    case "wake":
+      return withTyping(env, job.chatId, () => reportWake(env, job.chatId));
     case "bitrix":
       return withTyping(env, job.chatId, () => runBitrixAction(env, job.chatId, job.action));
   }

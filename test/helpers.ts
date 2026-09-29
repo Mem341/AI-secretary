@@ -35,6 +35,7 @@ export const testConfig: Config = {
   ZOOM_CLIENT_SECRET: "",
   BITRIX_WEBHOOK_URL: "",
   GMAIL_PUBSUB_TOPIC: "",
+  GOOGLE_PROJECT_ID: "",
   OWNER_NAME: "",
   OWNER_POSITION: "Директор з розвитку",
   OWNER_PHONE: "+380671234567",

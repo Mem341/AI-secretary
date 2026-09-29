@@ -1,9 +1,12 @@
-import { bitrixConfigured, type Env, gmailPushConfigured, zoomConfigured } from "../env";
+import { bitrixConfigured, type Env, zoomConfigured } from "../env";
 import { gmailPushEndpoint } from "../google/gmailPush";
 import { connectLink, hasGmailScope, hasGoogleAuth, loadOwnerSettings, type OwnerSettings, saveOwnerSettings } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
 import type { InlineKeyboard } from "../telegram/types";
 import { clearMemory, MEMORY_CHOICES, memoryStatus, SEND } from "../agent/memory";
+import { wakeReady } from "../google/pubsub";
+import { refreshCommands } from "./commands";
+import { applyEmailReminders } from "../google/reminders";
 import { integrationSource } from "../integrations";
 import { disconnect, INTEGRATION_NAMES, type Integration, startConnect } from "./connect";
 import type { User } from "./owner";
@@ -51,7 +54,8 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
   if (google) (gmail ? connected : available).push(line(gmail, gmail ? "Gmail — пошта" : "Gmail — перепідключіть Google й дозвольте пошту"));
   else available.push(line(false, "Gmail — пошта (разом із Google)"));
   connected.push(line(true, "Голосові повідомлення"));
-  (gmailPushConfigured(env) ? connected : available).push(line(gmailPushConfigured(env), "Миттєві сповіщення про нові листи"));
+  const awake = gmail && (await wakeReady(env));
+  (awake ? connected : available).push(line(awake, awake ? "Миттєві сповіщення про нові листи й нагадування" : "Сповіщення про листи й нагадування — /settings → ⏰"));
   (bitrixConfigured(env) ? connected : available).push(line(bitrixConfigured(env), "Bitrix24 — задачі (/bitrix)"));
   (zoomConfigured(env) ? connected : available).push(line(zoomConfigured(env), "Zoom — зустрічі в Zoom"));
 
@@ -88,7 +92,8 @@ async function mainView(env: Env, user: User): Promise<{ html: string; keyboard:
       : [{ text: `🔗 Підключити ${INTEGRATION_NAMES[w]}`, callback_data: `set:on:${w}` }];
   });
   if (integrationButtons.length) keyboard.push(integrationButtons);
-  if (gmailPushConfigured(env) && gmail) keyboard.push([{ text: "📧 Адреса для сповіщень про листи", callback_data: "set:mailpush" }]);
+  // Only for an own Pub/Sub topic (GMAIL_PUBSUB_TOPIC); otherwise the bot sets the push up itself.
+  if (env.GMAIL_PUBSUB_TOPIC && gmail) keyboard.push([{ text: "📧 Адреса для сповіщень про листи", callback_data: "set:mailpush" }]);
   return { html, keyboard };
 }
 
@@ -132,6 +137,7 @@ async function memoryView(env: Env, confirmClear = false): Promise<{ html: strin
 
 async function remindersView(env: Env): Promise<{ html: string; keyboard: InlineKeyboard }> {
   const marks = await reminderMarks(env);
+  const awake = await wakeReady(env);
   const button = (m: number) => ({ text: `${marks.includes(m) ? "✅" : "▫️"} ${m === 60 ? "1 год" : `${m} хв`}`, callback_data: `set:r:${m}` });
   return {
     html: [
@@ -141,7 +147,9 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
       "",
       `Зараз: ${marksText(marks)}`,
       "",
-      "<i>Нагадування приходять, якщо адресу /api/cron/reminders викликає cron-job.org кожні 5 хвилин.</i>",
+      awake
+        ? "<i>Як це працює: я ставлю на ваші зустрічі нагадування листом на обрані хвилини. У потрібну хвилину Google надсилає лист — я одразу пересилаю нагадування сюди й прибираю лист із пошти. Ні cron, ні сторонніх сервісів.</i>"
+        : "⚠️ <b>Нагадування ще не налаштовані.</b> Натисніть «🔁 Перевірити» — я налаштую все сам або підкажу один крок.",
     ].join("\n"),
     keyboard: [
       REMINDER_CHOICES.slice(0, 3).map(button),
@@ -150,12 +158,14 @@ async function remindersView(env: Env): Promise<{ html: string; keyboard: Inline
         { text: "🔕 Не нагадувати", callback_data: "set:r:off" },
         { text: "⬅️ Готово", callback_data: "set:back" },
       ],
+      ...(awake ? [] : [[{ text: "🔁 Перевірити", callback_data: "set:wake" }]]),
     ],
   };
 }
 
 /** /settings */
 export async function showSettings(env: Env, user: User): Promise<void> {
+  await refreshCommands(env);
   const view = await mainView(env, user);
   await new Telegram(env).send(user.tg_id, view.html, { keyboard: view.keyboard });
 }
@@ -183,6 +193,7 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
       return;
     }
     await disconnect(env, what);
+    await refreshCommands(env);
     await answer(`${INTEGRATION_NAMES[what]} відключено`);
     return show(await mainView(env, user));
   }
@@ -221,6 +232,11 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     await answer();
     return;
   }
+  if (data === "set:wake") {
+    await answer("Перевіряю…");
+    await env.jobs.send({ type: "wake", chatId: user.tg_id });
+    return;
+  }
   if (data === "set:back") {
     await answer();
     return show(await mainView(env, user));
@@ -247,6 +263,8 @@ export async function handleSettingsButton(env: Env, user: User, data: string, c
     settings.r = value === "off" ? [] : marks.includes(m) ? marks.filter((x) => x !== m) : [...marks, m].sort((a, b) => b - a);
     await saveOwnerSettings(env, settings);
     await answer(settings.r.length ? `Нагадування: ${marksText(settings.r)}` : "Нагадування вимкнено");
+    // The meetings of the coming week get the new reminder emails.
+    if (await wakeReady(env)) await applyEmailReminders(env).catch(() => 0);
     return show(await remindersView(env));
   }
   await answer();

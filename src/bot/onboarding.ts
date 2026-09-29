@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { connectLink, hasGoogleAuth } from "../google/oauth";
 import { esc, Telegram } from "../telegram/api";
+import { refreshCommands } from "./commands";
 import type { User } from "./owner";
 
 export async function sendConnectGoogle(env: Env): Promise<void> {
@@ -15,6 +16,7 @@ export async function sendConnectGoogle(env: Env): Promise<void> {
 /** /start — no questionnaire: the profile comes from Telegram and Google. */
 export async function startOnboarding(env: Env, user: User): Promise<void> {
   const tg = new Telegram(env);
+  await refreshCommands(env);
   const hello = user.full_name ? `👋 Вітаю, ${esc(user.full_name)}!` : "👋 Вітаю!";
   if (!(await hasGoogleAuth(env))) {
     await tg.send(

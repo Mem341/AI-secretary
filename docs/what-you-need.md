@@ -21,12 +21,8 @@
 **Необовʼязково, якщо захочете (без цього бот повністю працює):**
 
 - **Zoom** і **Bitrix24** підключаються прямо в боті: /settings → «🔗 Підключити …» — бот підкаже, що скопіювати;
-- миттєві сповіщення про нові листи: увімкніть [Cloud Pub/Sub API](https://console.cloud.google.com/apis/library/pubsub.googleapis.com),
-  створіть топік, дайте `gmail-api-push@system.gserviceaccount.com` роль **Pub/Sub Publisher**, задайте
-  `GMAIL_PUBSUB_TOPIC` = `projects/<project-id>/topics/<назва>`, у боті /settings → «📧 Адреса для сповіщень про листи»
-  → створіть Push-підписку на цю адресу → перепідключіть Google;
 - `OWNER_NAME` (інакше — імʼя з Telegram), `DEFAULT_DURATION_MIN`, моделі `AGENT_MODEL`, `VISION_MODEL`, `LLM_MODEL`;
-- нагадування за 30 і за 10 хв до зустрічі — потрібен виклик кожні 5 хв з cron-job.org (див. README → «Нагадування»); ранковий список зустрічей працює й так.
+- коли нагадувати про зустрічі — у боті /settings → ⏰.
 
 ---
 
@@ -58,11 +54,13 @@
 
 1. **Проєкт.** [Створіть проєкт](https://console.cloud.google.com/projectcreate) з будь-якою назвою, напр. `ai-secretary`.
    Далі переконайтеся, що вгорі вибрано саме його.
-2. **API.** Увімкніть (**Enable**) три бібліотеки:
+2. **API.** Увімкніть (**Enable**) чотири бібліотеки:
    - [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com);
    - [Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com);
    - [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) — для памʼяті розмови (бот
-     бачить лише свою приховану папку, не ваші файли).
+     бачить лише свою приховану папку, не ваші файли);
+   - [Cloud Pub/Sub API](https://console.cloud.google.com/apis/library/pubsub.googleapis.com) — щоб Gmail миттєво будив
+     бота: нові листи й нагадування про зустрічі (решту бот налаштує сам).
 3. **Екран згоди.** Відкрийте [Google Auth Platform](https://console.cloud.google.com/auth/overview) → **Get started**:
    - App name: `AI-secretary`; User support email: ваша пошта → Next;
    - **Audience**:

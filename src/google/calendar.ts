@@ -17,6 +17,8 @@ export interface GEvent {
   id: string;
   /** Version of the event; a write with If-Match fails (412) if someone changed it in between. */
   etag?: string;
+  /** The owner's own notifications for this event (per user: guests are not affected). */
+  reminders?: { useDefault?: boolean; overrides?: { method: string; minutes: number }[] };
   status?: "confirmed" | "tentative" | "cancelled";
   summary?: string;
   description?: string;
@@ -111,6 +113,14 @@ export class Calendar {
       console.warn("gcal: cannot mark event", ev.id, err instanceof Error ? err.message : err);
       return true;
     }
+  }
+
+  /** The owner's own notifications for the event (or a whole recurring series), silently. */
+  setReminders(eventId: string, reminders: NonNullable<GEvent["reminders"]>): Promise<GEvent> {
+    return this.request<GEvent>(`/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=none`, {
+      method: "PATCH",
+      body: JSON.stringify({ reminders }),
+    });
   }
 
   /** Deletes the event and notifies attendees. */

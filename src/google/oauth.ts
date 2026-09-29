@@ -18,6 +18,9 @@ export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.labels",
   // The bot's own hidden folder on the owner's Drive (not their files): the long conversation memory (agent/memory.ts).
   "https://www.googleapis.com/auth/drive.appdata",
+  // Pub/Sub in the owner's own Google Cloud project: the bot sets up "Gmail → bot" push itself (google/pubsub.ts).
+  // New mail and calendar reminder emails wake the bot through it — no cron and no outside service.
+  "https://www.googleapis.com/auth/pubsub",
 ];
 const STATE_TTL_MS = 30 * 60_000;
 
@@ -113,6 +116,8 @@ export interface OwnerSettings {
   d?: boolean;
   /** Conversation memory per agent, in messages (20 / 50 / 100). */
   m?: number;
+  /** Whether Google wakes the bot (Gmail push set up): "ok", or why not (google/pubsub.ts). */
+  p?: string;
 }
 
 /** Keys the owner gave the bot in /settings (Bitrix24, Zoom); kept encrypted in the same pinned message. */
