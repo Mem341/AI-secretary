@@ -100,12 +100,24 @@ export interface GoogleGrant {
   scope: string;
 }
 
+/**
+ * The owner's choices from /settings, kept (unencrypted, nothing secret) next to the grant in the same pinned
+ * message. Missing = the defaults.
+ */
+export interface OwnerSettings {
+  /** Minutes before a meeting to remind; [] = no reminders. */
+  r?: number[];
+  /** Morning list of the day's meetings; false = off. */
+  d?: boolean;
+}
+
 interface GrantData {
   k: "google";
   t: string;
+  s?: OwnerSettings;
 }
 
-let grantCache: { at: number; grant: GoogleGrant | null; messageId: number | null } | null = null;
+let grantCache: { at: number; grant: GoogleGrant | null; messageId: number | null; data: GrantData | null } | null = null;
 let accessCache: { token: string; expiresAt: number } | null = null;
 const GRANT_TTL_MS = 60_000;
 
@@ -138,8 +150,35 @@ export async function loadGrant(env: Env): Promise<GoogleGrant | null> {
       .then((json) => JSON.parse(json) as GoogleGrant)
       .catch(() => null);
   }
-  grantCache = { at: Date.now(), grant, messageId: grant ? pinned!.message_id : null };
+  grantCache = { at: Date.now(), grant, messageId: grant ? pinned!.message_id : null, data: grant ? data : null };
   return grant;
+}
+
+/** The owner's /settings choices (empty until Google is connected, as they live in its pinned message). */
+export async function loadOwnerSettings(env: Env): Promise<OwnerSettings> {
+  await loadGrant(env);
+  return { ...(grantCache?.data?.s ?? {}) };
+}
+
+function grantMessage(data: GrantData, email: string | null): string {
+  return (
+    hiddenData(data) +
+    `🔐 <b>Google підключено</b>${email ? `: ${esc(email)}` : ""}\n\n` +
+    "У цьому закріпленому повідомленні зашифрований доступ бота до вашого календаря й пошти, а також ваші налаштування — " +
+    "бот нічого не зберігає деінде. Не відкріплюйте його. Щоб відключити Google, просто видаліть це повідомлення."
+  );
+}
+
+/** Saves the owner's /settings choices into the pinned message (edited in place, it stays pinned). */
+export async function saveOwnerSettings(env: Env, settings: OwnerSettings): Promise<boolean> {
+  const grant = await loadGrant(env);
+  const data = grantCache?.data;
+  const messageId = grantCache?.messageId;
+  if (!grant || !data || !messageId) return false;
+  const next: GrantData = { ...data, s: settings };
+  await new Telegram(env).edit(env.OWNER_TELEGRAM_ID, messageId, grantMessage(next, grant.email));
+  grantCache = { at: Date.now(), grant, messageId, data: next };
+  return true;
 }
 
 export async function hasGoogleAuth(env: Env): Promise<boolean> {
@@ -154,14 +193,12 @@ export async function hasGmailScope(env: Env): Promise<boolean> {
 async function saveGrant(env: Env, grant: GoogleGrant): Promise<void> {
   const tg = new Telegram(env);
   const previous = (await loadGrant(env).catch(() => null)) ? grantCache?.messageId : null;
-  const html =
-    hiddenData({ k: "google", t: await encrypt(env.ENCRYPTION_KEY, JSON.stringify(grant)) } satisfies GrantData) +
-    `🔐 <b>Google підключено</b>${grant.email ? `: ${esc(grant.email)}` : ""}\n\n` +
-    "У цьому закріпленому повідомленні зашифрований доступ бота до вашого календаря й пошти — бот нічого не зберігає " +
-    "деінде. Не відкріплюйте його. Щоб відключити Google, просто видаліть це повідомлення.";
-  const msg = await tg.send(env.OWNER_TELEGRAM_ID, html);
+  // Reconnecting keeps the owner's settings.
+  const settings = grantCache?.data?.s;
+  const data: GrantData = { k: "google", t: await encrypt(env.ENCRYPTION_KEY, JSON.stringify(grant)), ...(settings ? { s: settings } : {}) };
+  const msg = await tg.send(env.OWNER_TELEGRAM_ID, grantMessage(data, grant.email));
   await tg.call("pinChatMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: msg.message_id, disable_notification: true });
-  grantCache = { at: Date.now(), grant, messageId: msg.message_id };
+  grantCache = { at: Date.now(), grant, messageId: msg.message_id, data };
   accessCache = null;
   if (previous && previous !== msg.message_id) {
     await tg.call("deleteMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: previous }).catch(() => undefined);
@@ -239,6 +276,6 @@ export async function forgetGoogleAuth(env: Env): Promise<void> {
       .call("deleteMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: messageId })
       .catch(() => tg.call("unpinChatMessage", { chat_id: env.OWNER_TELEGRAM_ID, message_id: messageId }).catch(() => undefined));
   }
-  grantCache = { at: Date.now(), grant: null, messageId: null };
+  grantCache = { at: Date.now(), grant: null, messageId: null, data: null };
   accessCache = null;
 }

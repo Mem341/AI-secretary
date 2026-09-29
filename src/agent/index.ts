@@ -10,7 +10,8 @@ import { gmailTools } from "./gmailTools";
 import { toTelegramHtml } from "./html";
 import { history, remember } from "./memory";
 import { calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
-import { runAgent, str, thinkTool, type Tool } from "./runner";
+import { routeByKeywords } from "./route";
+import { runAgent, str, type Tool } from "./runner";
 
 /**
  * The n8n "AI Agent ALL" flow: Normalize Input → Build Agent Context → 🧠 Supervisor (with the Calendar Agent and
@@ -51,11 +52,57 @@ function withImages(text: string, images: ContentPart[] | undefined): string | C
   return images?.length ? [{ type: "text", text }, ...images] : text;
 }
 
+type AgentName = "calendar_agent" | "gmail_agent";
+
+/** One sub-agent (n8n "Calendar Agent" / "Gmail Agent" sub-workflow) on the user's message, with its own memory. */
+async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date): Promise<string> {
+  if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
+  if (name === "gmail_agent" && !(await hasGmailScope(env))) {
+    return `Немає доступу до Gmail. Нехай власник перепідключить Google (/settings) і поставить галочки для пошти: ${await connectLink(env)}`;
+  }
+  const memoryKey = `${name}:${input.chatId}`;
+  const owner = await loadOwner(env);
+  const answer =
+    name === "calendar_agent"
+      ? await runAgent(env, {
+          model: env.AGENT_MODEL,
+          system: calendarPrompt(owner, await loadDirectory(env), now),
+          history: history(memoryKey),
+          input: withImages(userMessage, input.images),
+          tools: calendarTools(env, owner.email),
+          maxIterations: 10,
+        })
+      : await runAgent(env, {
+          model: env.AGENT_MODEL,
+          system: gmailPrompt(),
+          history: history(memoryKey),
+          input: withImages(userMessage, input.images),
+          tools: gmailTools(env),
+          maxIterations: 10,
+        });
+  remember(memoryKey, userMessage, answer);
+  return answer;
+}
+
+/** n8n sub-workflows cut the session block off and keep the user's message (with the reply context). */
+function userMessageOf(chatInput: string): string {
+  return chatInput.split("\n\n---SESSION---")[0]!.replace("USER: ", "").trim();
+}
+
 export async function runSupervisor(env: Env, input: AgentInput, now = new Date()): Promise<string> {
   const chatInput = buildChatInput(input);
   const key = String(input.chatId);
 
-  const subAgent = (name: "calendar_agent" | "gmail_agent", description: string): Tool => ({
+  // Plain code first: an obvious calendar or mail request goes straight to its agent (the Supervisor would only
+  // pass it on and repeat the answer — two model calls for nothing).
+  const direct = routeByKeywords(input);
+  if (direct) {
+    const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now);
+    remember(`supervisor:${key}`, chatInput, output);
+    return output;
+  }
+
+  const subAgent = (name: AgentName, description: string): Tool => ({
     spec: {
       name,
       description,
@@ -66,35 +113,7 @@ export async function runSupervisor(env: Env, input: AgentInput, now = new Date(
       },
     },
     async run(args) {
-      const prompt = str(args, "prompt") || chatInput;
-      // n8n sub-workflows cut the session block off and keep the user's message.
-      const userMessage = prompt.split("\n\n---SESSION---")[0]!.replace("USER: ", "").trim();
-      if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
-      if (name === "gmail_agent" && !(await hasGmailScope(env))) {
-        return `Немає доступу до Gmail. Нехай власник перепідключить Google (/settings) і поставить галочки для пошти: ${await connectLink(env)}`;
-      }
-      const memoryKey = `${name}:${key}`;
-      const owner = await loadOwner(env);
-      const answer =
-        name === "calendar_agent"
-          ? await runAgent(env, {
-              model: env.AGENT_MODEL,
-              system: calendarPrompt(owner, await loadDirectory(env), now),
-              history: history(memoryKey),
-              input: withImages(userMessage, input.images),
-              tools: calendarTools(env, owner.email),
-              maxIterations: 10,
-            })
-          : await runAgent(env, {
-              model: env.AGENT_MODEL,
-              system: gmailPrompt(),
-              history: history(memoryKey),
-              input: withImages(userMessage, input.images),
-              tools: gmailTools(env),
-              maxIterations: 10,
-            });
-      remember(memoryKey, userMessage, answer);
-      return answer;
+      return runSubAgent(env, name, userMessageOf(str(args, "prompt") || chatInput), input, now);
     },
   });
 
@@ -109,7 +128,6 @@ export async function runSupervisor(env: Env, input: AgentInput, now = new Date(
         "Calendar Agent — manages Google Calendar: create/update/delete events, check schedule, RSVP, reschedule, manage attendees. Supports Google Meet and Zoom. Call this tool for any calendar-related requests.",
       ),
       subAgent("gmail_agent", "Gmail Agent — search, read, send, reply, delete, label emails. Call with the user's full request about email."),
-      thinkTool,
     ],
     maxIterations: 15,
     temperature: 0.2,
@@ -118,10 +136,23 @@ export async function runSupervisor(env: Env, input: AgentInput, now = new Date(
   return output;
 }
 
+/**
+ * ✅ Прийняти / ❌ Відхилити under an invitation: the n8n Calendar Agent's rule ("accept:{eventId} → RSVP tool") done
+ * in code — same tool, same answer, no model call.
+ */
+async function answerInvitation(env: Env, accept: boolean, eventId: string): Promise<string> {
+  if (!(await hasGoogleAuth(env))) return `Google не підключено: ${await connectLink(env)}`;
+  const owner = await loadOwner(env);
+  const tool = calendarTools(env, owner.email).find((t) => t.spec.name === "rsvp_event")!;
+  await tool.run({ eventId, responseStatus: accept ? "accepted" : "declined" });
+  return accept ? "✅ Зустріч підтверджена!" : "❌ Зустріч відхилена!";
+}
+
 /** The whole flow for one update: run the agents, reply, and settle a pressed button. */
 export async function handleWithAgents(env: Env, input: AgentInput): Promise<void> {
   const tg = new Telegram(env);
-  const output = await runSupervisor(env, input);
+  const rsvp = /^(accept|decline):(.+)$/.exec(input.callbackData ?? "");
+  const output = rsvp ? await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!) : await runSupervisor(env, input);
   const html = toTelegramHtml(output);
   await tg.send(input.chatId, html).catch(async (err) => {
     // Telegram rejected the markup (e.g. a broken link): the same answer as plain text.

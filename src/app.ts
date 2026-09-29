@@ -321,8 +321,8 @@ Redirect URI налаштовувати не треба.`,
 
   steps.push({
     status: "optional",
-    title: `Нагадування за ${env.REMINDER_MINUTES.join(" і ")} хв до зустрічі (необовʼязково)`,
-    details: `Ранковий список зустрічей працює й так. Щоб бот нагадував перед кожною зустріччю (без ШІ, просто з календаря),
+    title: "Нагадування перед зустріччю (необовʼязково)",
+    details: `Ранковий список зустрічей працює й так. Коли саме нагадувати (за 1 год, 30, 15, 10, 5 хв), власник обирає в боті: /settings → ⏰. Щоб бот нагадував перед кожною зустріччю (без ШІ, просто з календаря),
 адресу ${code(`${env.PUBLIC_URL}/api/cron/reminders`)} треба викликати кожні 5 хвилин. Безкоштовно:
 <a href="https://cron-job.org">cron-job.org</a> → Sign up → <b>Create cronjob</b> → URL — адреса вище, Schedule — <b>Every 5 minutes</b>${env.CRON_SECRET ? `,
 у вкладці Advanced додайте заголовок ${code("Authorization: Bearer <CRON_SECRET>")}` : ""} → Create. На Vercel Pro замість цього можна додати cron у ${code("vercel.json")}.`,

@@ -25,9 +25,13 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 - `src/agent/` — a strict port of the owner's n8n flows: `index.ts` (Normalize Input / Build Agent Context →
   Supervisor with `calendar_agent` and `gmail_agent` as tools → Parse Agent Output), `runner.ts` (tool-calling
   loop over OpenRouter), `prompts.ts` (the n8n prompts), `calendarTools.ts` (the n8n Calendar MCP tools),
-  `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (window memory, in-instance), `html.ts`.
+  `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (window memory, in-instance), `html.ts`,
+  `route.ts` (the Supervisor's keyword routing table in code: an obvious calendar/mail request, or a reply to the
+  bot's notice, goes straight to its agent; anything unclear goes to the Supervisor). No Think tool. ✅ / ❌ under an
+  invitation (`accept:` / `decline:`) is answered in code with the same RSVP tool, no model call.
   Supervisor = `LLM_MODEL`, sub-agents = `AGENT_MODEL` (defaults to `LLM_MODEL`, i.e. `openai/gpt-6-luna-pro` everywhere). Keep prompts and tool names in line with the n8n originals.
-- `src/bot/` — `onboarding.ts` (/start, /settings, /help), `owner.ts` (profile from Telegram/Google/env),
+- `src/bot/` — `onboarding.ts` (/start, /help), `settings.ts` (/settings: what is connected, reminder times and the
+  morning list chosen with `set:…` buttons, no AI), `owner.ts` (profile from Telegram/Google/env),
   `contacts.ts` (names → emails from calendar attendees). Commands: /start /settings /reset /help; everything else
   goes to the agents.
 - `src/google/` — OAuth (grant in a pinned message), Calendar API + push notices (`sync.ts`: n8n invitation
@@ -40,7 +44,9 @@ webhook and shows what is left to configure (Google, Gmail push, Zoom).
 
 ## Where state lives (there is no database)
 
-- Google grant: encrypted in ONE pinned message of the owner's chat (`loadGrant` reads it via getChat).
+- Google grant: encrypted in ONE pinned message of the owner's chat (`loadGrant` reads it via getChat). The owner's
+  /settings choices (`OwnerSettings`: reminder minutes, morning list) sit unencrypted in the same message's hidden
+  data; saving edits that message in place.
 - "Which meeting/email is this reply about": hidden in the bot's own notices (`hiddenData` / `readHidden`) and
   passed to the agents as `[eventId: …]` / `[messageId: …]` in the reply context. Other hidden data likewise lives
   in the bot's own messages; Telegram returns it with button presses and replies. Keep it under

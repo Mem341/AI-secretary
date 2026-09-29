@@ -1,5 +1,6 @@
 import { type AgentInput, handleWithAgents } from "./agent";
 import { helpText } from "./bot/onboarding";
+import { digestEnabled } from "./bot/settings";
 import { type Env, gmailPushConfigured } from "./env";
 import { gmailSync, startGmailWatch } from "./google/gmailPush";
 import { connectLink, forgetGoogleAuth, GoogleAuthRevokedError, hasGmailScope, hasGoogleAuth } from "./google/oauth";
@@ -103,7 +104,7 @@ export async function runJob(env: Env, job: Job): Promise<void> {
     }
     case "daily":
       if (!(await hasGoogleAuth(env))) return;
-      await sendDigest(env).catch((err) => logError(env, "digest", err));
+      if (await digestEnabled(env)) await sendDigest(env).catch((err) => logError(env, "digest", err));
       await startWatch(env);
       await markUpcoming(env);
       // A Gmail watch lapses after 7 days; renewing daily keeps new-mail notifications flowing.

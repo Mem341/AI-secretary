@@ -1,5 +1,6 @@
 import { forget } from "../agent/memory";
-import { helpText, sendConnectGoogle, showSettings, startOnboarding } from "../bot/onboarding";
+import { helpText, sendConnectGoogle, startOnboarding } from "../bot/onboarding";
+import { handleSettingsButton, showSettings } from "../bot/settings";
 import { loadOwner, type User } from "../bot/owner";
 import { isOwner, type Env } from "../env";
 import { connectWithCode } from "../google/connect";
@@ -143,11 +144,18 @@ async function handleCommand(env: Env, user: User, text: string): Promise<boolea
   return false;
 }
 
-/** n8n: a button press is one more input for the Supervisor ("[Кнопка: accept:…]" + the message it belongs to). */
+/**
+ * Buttons. Settings buttons ("set:…") are handled here at once; ✅ Прийняти / ❌ Відхилити go to the agent job,
+ * which answers them in code; any other button is one more input for the Supervisor, as in n8n.
+ */
 async function handleCallback(env: Env, cq: TgCallbackQuery): Promise<void> {
   const user = await authorize(env, cq.from);
   if (!user) return;
   const chatId = cq.message?.chat.id ?? user.tg_id;
+  if (cq.data?.startsWith("set:") && cq.message) {
+    await handleSettingsButton(env, user, cq.data, cq.id, cq.message.message_id);
+    return;
+  }
   await env.jobs.send({
     type: "agent",
     input: {
