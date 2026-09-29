@@ -10,13 +10,15 @@ export interface Config {
   OWNER_TELEGRAM_ID: number;
   /** Public https URL of the deployment, no trailing slash (OAuth redirect, Google push, Telegram webhook). */
   PUBLIC_URL: string;
+  /** The strong model: voice requests, and a second try when a cheaper model fails. */
   LLM_MODEL: string;
   LLM_MODEL_SUMMARY: string;
-  /** Model of the Calendar and Gmail agents (the n8n sub-workflows); the same as LLM_MODEL unless set. */
+  /** Text requests: the Supervisor and the Calendar / Gmail agents (cheap, tool calling). */
   AGENT_MODEL: string;
+  /** Requests with pictures (screenshots, photos): a cheap model that sees images. */
+  VISION_MODEL: string;
   /** OpenRouter model with audio input that transcribes voice messages. */
   STT_MODEL: string;
-  /** Minutes before a meeting for the Telegram reminder (/api/cron/reminders). */
   /** Minutes before a meeting to remind, largest first ("30,10" → [30, 10]). */
   REMINDER_MINUTES: number[];
 
@@ -74,6 +76,8 @@ export function reminderMinutes(value: string): number[] {
 export const DEFAULT_LLM_MODEL = "openai/gpt-6-luna-pro";
 export const DEFAULT_LLM_MODEL_SUMMARY = "anthropic/claude-sonnet-4.5";
 // OpenAI models on OpenRouter take audio only as wav/mp3; Telegram voice notes are OGG/Opus, which Gemini accepts.
+export const DEFAULT_AGENT_MODEL = "openai/gpt-oss-120b";
+export const DEFAULT_VISION_MODEL = "qwen/qwen3.7-flash";
 export const DEFAULT_STT_MODEL = "google/gemini-2.5-flash";
 
 export const REQUIRED_VARS = ["OWNER_TELEGRAM_ID", "TELEGRAM_BOT_TOKEN", "OPENROUTER_API_KEY"] as const;
@@ -111,7 +115,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     LLM_MODEL: val("LLM_MODEL") || DEFAULT_LLM_MODEL,
     LLM_MODEL_SUMMARY: val("LLM_MODEL_SUMMARY") || DEFAULT_LLM_MODEL_SUMMARY,
     STT_MODEL: val("STT_MODEL") || DEFAULT_STT_MODEL,
-    AGENT_MODEL: val("AGENT_MODEL") || val("LLM_MODEL") || DEFAULT_LLM_MODEL,
+    AGENT_MODEL: val("AGENT_MODEL") || DEFAULT_AGENT_MODEL,
+    VISION_MODEL: val("VISION_MODEL") || DEFAULT_VISION_MODEL,
     REMINDER_MINUTES: reminderMinutes(val("REMINDER_MINUTES")),
     TELEGRAM_BOT_TOKEN: botToken,
     OPENROUTER_API_KEY: val("OPENROUTER_API_KEY"),

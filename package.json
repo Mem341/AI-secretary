@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vercel dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval:models": "vitest run --config eval/vitest.config.mts"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

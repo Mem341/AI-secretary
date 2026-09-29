@@ -11,7 +11,7 @@ import { toTelegramHtml } from "./html";
 import { history, remember } from "./memory";
 import { calendarPrompt, gmailPrompt, supervisorPrompt } from "./prompts";
 import { routeByKeywords } from "./route";
-import { runAgent, str, type Tool } from "./runner";
+import { ModelError, runAgent, str, type Tool } from "./runner";
 
 /**
  * The n8n "AI Agent ALL" flow: Normalize Input → Build Agent Context → 🧠 Supervisor (with the Calendar Agent and
@@ -55,7 +55,32 @@ function withImages(text: string, images: ContentPart[] | undefined): string | C
 type AgentName = "calendar_agent" | "gmail_agent";
 
 /** One sub-agent (n8n "Calendar Agent" / "Gmail Agent" sub-workflow) on the user's message, with its own memory. */
-async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date): Promise<string> {
+/** One request's run: the model for it, and whether a tool already changed something (then it is never retried). */
+export interface RunContext {
+  model: string;
+  wrote: boolean;
+}
+
+/** Tools that only read; any other tool call changes the calendar or the mailbox. */
+const READ_ONLY = /^(get_|check_free_busy|msg_get|thread_get|draft_get|label_get)/;
+
+function tracking(ctx: RunContext) {
+  return (name: string) => {
+    if (!READ_ONLY.test(name)) ctx.wrote = true;
+  };
+}
+
+/**
+ * Which model serves a request: pictures → VISION_MODEL (sees images), voice → LLM_MODEL (spoken requests are
+ * messy), plain text → AGENT_MODEL (cheap). LLM_MODEL is also the second try when the cheap one fails.
+ */
+export function modelFor(env: Env, input: AgentInput): string {
+  if (input.images?.length) return env.VISION_MODEL;
+  if (input.inputType === "voice") return env.LLM_MODEL;
+  return env.AGENT_MODEL;
+}
+
+async function runSubAgent(env: Env, name: AgentName, userMessage: string, input: AgentInput, now: Date, ctx: RunContext): Promise<string> {
   if (!(await hasGoogleAuth(env))) return `Google не підключено. Нехай власник натисне /start → «Підключити Google»: ${await connectLink(env)}`;
   if (name === "gmail_agent" && !(await hasGmailScope(env))) {
     return `Немає доступу до Gmail. Нехай власник перепідключить Google (/settings) і поставить галочки для пошти: ${await connectLink(env)}`;
@@ -65,7 +90,8 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
   const answer =
     name === "calendar_agent"
       ? await runAgent(env, {
-          model: env.AGENT_MODEL,
+          model: ctx.model,
+          onTool: tracking(ctx),
           system: calendarPrompt(owner, await loadDirectory(env), now),
           history: history(memoryKey),
           input: withImages(userMessage, input.images),
@@ -73,7 +99,8 @@ async function runSubAgent(env: Env, name: AgentName, userMessage: string, input
           maxIterations: 10,
         })
       : await runAgent(env, {
-          model: env.AGENT_MODEL,
+          model: ctx.model,
+          onTool: tracking(ctx),
           system: gmailPrompt(),
           history: history(memoryKey),
           input: withImages(userMessage, input.images),
@@ -89,7 +116,7 @@ function userMessageOf(chatInput: string): string {
   return chatInput.split("\n\n---SESSION---")[0]!.replace("USER: ", "").trim();
 }
 
-export async function runSupervisor(env: Env, input: AgentInput, now = new Date()): Promise<string> {
+export async function runSupervisor(env: Env, input: AgentInput, ctx: RunContext, now = new Date()): Promise<string> {
   const chatInput = buildChatInput(input);
   const key = String(input.chatId);
 
@@ -97,7 +124,7 @@ export async function runSupervisor(env: Env, input: AgentInput, now = new Date(
   // pass it on and repeat the answer — two model calls for nothing).
   const direct = routeByKeywords(input);
   if (direct) {
-    const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now);
+    const output = await runSubAgent(env, direct, userMessageOf(chatInput), input, now, ctx);
     remember(`supervisor:${key}`, chatInput, output);
     return output;
   }
@@ -113,12 +140,12 @@ export async function runSupervisor(env: Env, input: AgentInput, now = new Date(
       },
     },
     async run(args) {
-      return runSubAgent(env, name, userMessageOf(str(args, "prompt") || chatInput), input, now);
+      return runSubAgent(env, name, userMessageOf(str(args, "prompt") || chatInput), input, now, ctx);
     },
   });
 
   const output = await runAgent(env, {
-    model: env.LLM_MODEL,
+    model: ctx.model,
     system: supervisorPrompt(),
     history: history(`supervisor:${key}`),
     input: withImages(chatInput, input.images),
@@ -148,11 +175,26 @@ async function answerInvitation(env: Env, accept: boolean, eventId: string): Pro
   return accept ? "✅ Зустріч підтверджена!" : "❌ Зустріч відхилена!";
 }
 
+/**
+ * Runs the request on its model; if that model fails before changing anything, the same request goes to the strong
+ * LLM_MODEL. After a change (an event created, an email sent) it is never repeated — that could duplicate it.
+ */
+export async function runWithFallback(env: Env, input: AgentInput): Promise<string> {
+  const ctx: RunContext = { model: modelFor(env, input), wrote: false };
+  try {
+    return await runSupervisor(env, input, ctx);
+  } catch (err) {
+    if (!(err instanceof ModelError) || ctx.wrote || ctx.model === env.LLM_MODEL) throw err;
+    console.warn(`agent: ${err.message}; retrying on ${env.LLM_MODEL}`);
+    return runSupervisor(env, input, { model: env.LLM_MODEL, wrote: false });
+  }
+}
+
 /** The whole flow for one update: run the agents, reply, and settle a pressed button. */
 export async function handleWithAgents(env: Env, input: AgentInput): Promise<void> {
   const tg = new Telegram(env);
   const rsvp = /^(accept|decline):(.+)$/.exec(input.callbackData ?? "");
-  const output = rsvp ? await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!) : await runSupervisor(env, input);
+  const output = rsvp ? await answerInvitation(env, rsvp[1] === "accept", rsvp[2]!) : await runWithFallback(env, input);
   const html = toTelegramHtml(output);
   await tg.send(input.chatId, html).catch(async (err) => {
     // Telegram rejected the markup (e.g. a broken link): the same answer as plain text.

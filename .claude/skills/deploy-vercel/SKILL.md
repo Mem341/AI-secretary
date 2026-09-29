@@ -105,5 +105,5 @@ Include the bot's @username and the site URL. No explanations of internals, no a
 | Bot: «Google не прийняв цей код» | The code is single-use and lives a few minutes. Press «Підключити Google» again. |
 | «Доступ до Google втрачено» | Access was revoked, the consent screen is in Testing (7-day expiry), or the bot token / `ENCRYPTION_KEY` changed. Reconnect via `/settings`. |
 | Bot silent | /api/setup → Telegram row. Check that `OWNER_TELEGRAM_ID` is the user's number, not the bot's. |
-| LLM errors in the bot | OpenRouter balance is empty, or `LLM_MODEL` / `AGENT_MODEL` holds a wrong model id (the agents need a model with tool calling). |
+| LLM errors in the bot | OpenRouter balance is empty, or `LLM_MODEL` / `AGENT_MODEL` / `VISION_MODEL` holds a wrong model id (the agents need a model with tool calling). |
 | Anything else | Vercel runtime logs. The bot also reports errors to its owner in the chat. |

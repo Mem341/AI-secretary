@@ -1,6 +1,6 @@
 import type { Env } from "../env";
 import { GoogleAuthRevokedError } from "../google/oauth";
-import { type AgentMessage, type ChatMessage, chatWithTools, type ContentPart, type ToolSpec } from "../llm/openrouter";
+import { type AgentMessage, type ChatMessage, chatWithTools, type ContentPart, type TokenUsage, type ToolSpec } from "../llm/openrouter";
 
 /** A tool an agent may call (an n8n "…Tool" node). */
 export interface Tool {
@@ -17,7 +17,14 @@ export interface AgentRun {
   tools: Tool[];
   maxIterations: number;
   temperature?: number;
+  /** Called before each tool call (used to know whether anything was changed). */
+  onTool?(name: string): void;
+  /** Called with each model call's token usage (the model comparison script adds them up). */
+  onUsage?(usage: TokenUsage): void;
 }
+
+/** The model failed (API error, or no answer within maxIterations): the caller may retry on a stronger model. */
+export class ModelError extends Error {}
 
 const MAX_TOOL_RESULT = 12_000;
 
@@ -30,7 +37,10 @@ export async function runAgent(env: Env, run: AgentRun): Promise<string> {
   const messages: AgentMessage[] = [{ role: "system", content: run.system }, ...run.history, { role: "user", content: run.input }];
   let last = "";
   for (let i = 0; i < run.maxIterations; i++) {
-    const turn = await chatWithTools(env, run.model, messages, run.tools.map((t) => t.spec), run.temperature);
+    const turn = await chatWithTools(env, run.model, messages, run.tools.map((t) => t.spec), run.temperature).catch((err: unknown) => {
+      throw new ModelError(`${run.model}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    if (turn.usage) run.onUsage?.(turn.usage);
     last = turn.content;
     if (!turn.toolCalls.length) return turn.content;
     messages.push({ role: "assistant", content: turn.content || null, tool_calls: turn.toolCalls });
@@ -40,17 +50,20 @@ export async function runAgent(env: Env, run: AgentRun): Promise<string> {
       try {
         if (!tool) throw new Error(`Unknown tool ${call.function.name}`);
         const args = call.function.arguments ? (JSON.parse(call.function.arguments) as Record<string, unknown>) : {};
+        run.onTool?.(call.function.name);
         result = await tool.run(args);
       } catch (err) {
-        // A revoked Google grant ends the run: the owner is asked to reconnect (jobs.ts).
-        if (err instanceof GoogleAuthRevokedError) throw err;
+        // A revoked Google grant ends the run: the owner is asked to reconnect (jobs.ts). A nested agent's model
+        // failure ends it too, so the whole request can be retried on the stronger model.
+        if (err instanceof GoogleAuthRevokedError || err instanceof ModelError) throw err;
         result = { error: err instanceof Error ? err.message : String(err) };
       }
       const text = typeof result === "string" ? result : JSON.stringify(result ?? { ok: true });
       messages.push({ role: "tool", tool_call_id: call.id, content: text.slice(0, MAX_TOOL_RESULT) });
     }
   }
-  return last || "Не вдалося завершити запит — спробуйте сформулювати простіше.";
+  if (last) return last;
+  throw new ModelError(`${run.model}: no answer after ${run.maxIterations} steps`);
 }
 
 /** A string argument, or "" (models sometimes omit optional ones). */
