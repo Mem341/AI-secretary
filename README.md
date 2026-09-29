@@ -51,7 +51,7 @@
 | `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | зустрічі в Zoom (застосунок Server-to-Server OAuth) |
 | `GMAIL_PUBSUB_TOPIC` | миттєві сповіщення про нові листи (топік Cloud Pub/Sub) |
 | `LLM_MODEL` | модель Supervisor (маршрутизатор і розмова); типова — `openai/gpt-6-luna-pro` |
-| `AGENT_MODEL` | модель агентів календаря й пошти; типова — `x-ai/grok-4.1-fast` |
+| `AGENT_MODEL` | окрема модель для агентів календаря й пошти; типово — та сама, що `LLM_MODEL` |
 | `REMINDER_MINUTES` | за скільки хвилин нагадувати про зустріч (30) — див. «Нагадування» |
 | `OWNER_NAME` | ваше імʼя для агентів (інакше — з Telegram) |
 | `DEFAULT_DURATION_MIN` | тривалість зустрічі за замовчуванням (60) |
