@@ -31,12 +31,26 @@ export function parseAttendees(value: unknown): { email: string; displayName?: s
   }
 }
 
+/** "через 25 хв" / "через 2 год 10 хв" / "йде зараз" — so answers can say how soon a meeting starts. */
+export function startsIn(start: string | undefined, end: string | undefined, now = Date.now()): string | undefined {
+  const s = start ? Date.parse(start) : NaN;
+  if (Number.isNaN(s)) return undefined;
+  const e = end ? Date.parse(end) : s;
+  if (s <= now) return e > now ? "йде зараз" : "вже минула";
+  const min = Math.round((s - now) / 60_000);
+  if (min < 60) return `через ${min} хв`;
+  if (min < 24 * 60) return `через ${Math.floor(min / 60)} год${min % 60 ? ` ${min % 60} хв` : ""}`;
+  const days = Math.round(min / (24 * 60));
+  return `через ${days} ${days === 1 ? "день" : days < 5 ? "дні" : "днів"}`;
+}
+
 /** A compact event for the model (no raw noise). */
 function brief(ev: GEvent): Record<string, unknown> {
   return {
     id: ev.id,
     status: ev.status,
     summary: ev.summary,
+    startsIn: startsIn(ev.start?.dateTime, ev.end?.dateTime),
     start: ev.start?.dateTime ?? ev.start?.date,
     end: ev.end?.dateTime ?? ev.end?.date,
     location: ev.location,

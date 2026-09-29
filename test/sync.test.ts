@@ -275,7 +275,8 @@ describe("push channel without stored state", () => {
     await push(channelToken(env), "sync");
     expect(jobs).toEqual([]);
     await push(channelToken(env));
-    expect(jobs.map((j) => j.body)).toEqual([{ type: "sync" }]);
+    // A real change also checks for due reminders (the bot has no finer clock on a free plan).
+    expect(jobs.map((j) => j.body)).toEqual([{ type: "sync" }, { type: "reminders" }]);
   });
 
   it("the daily cron is protected by CRON_SECRET and queues the daily job", async () => {
