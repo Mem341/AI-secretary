@@ -27,7 +27,7 @@ webhook and redirects to the bot; `/api/health` shows the state.
 - `src/agent/` — a strict port of the owner's n8n flows: `index.ts` (Normalize Input / Build Agent Context →
   Supervisor with `calendar_agent` and `gmail_agent` as tools → Parse Agent Output), `runner.ts` (tool-calling
   loop over OpenRouter), `prompts.ts` (the n8n prompts), `calendarTools.ts` (the n8n Calendar MCP tools),
-  `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (window memory, in-instance), `html.ts`,
+  `gmailTools.ts` (the n8n Gmail sub-workflow tools), `memory.ts` (one-session window memory), `html.ts`,
   `route.ts` (the Supervisor's keyword routing table in code: an obvious calendar/mail request, or a reply to the
   bot's notice, goes straight to its agent; anything unclear goes to the Supervisor). No Think tool. ✅ / ❌ under an
   invitation (`accept:` / `decline:`) is answered in code with the same RSVP tool, no model call.
@@ -78,13 +78,15 @@ webhook and redirects to the bot; `/api/health` shows the state.
   (`aisStart`, `aiSecretaryDraft`, `aisBotCancel`, `aisRsvp` — guests' answers already reported), written with
   If-Match on the event's etag before a notice or reminder is sent (`claimPrivate`): parallel copies of the bot
   handling the same push race there and only one sends. Gmail: a hidden label marks reported emails.
-- The agents' chat memory (`agent/memory.ts`, the owner asked for it): ONE file, memory.json, in the bot's hidden
-  Drive folder (`google/drive.ts`, scope `drive.appdata`): ONE log shared by all agents, the last 20/50/100 messages
-  (owner's choice, `OwnerSettings.m`); plus facts the agents save with `remember_fact`. The model sees the recent log
-  ONLY as a reference block in the system prompt (`conversationBlock`, marked «do not carry out again»), never as
-  earlier user turns — old requests must not be re-run. `delete_event` refuses unless the CURRENT message asks
-  (`deletionAllowed`); several / «all» only after «так». In JS regexes `\b` does not work next to Cyrillic letters.
-  Loaded at the start of an agent request, written after the answer. Without the Drive scope it stays in the instance.
+- The agents' chat memory (`agent/memory.ts`, the owner asked for it) — n8n's Window Buffer Memory (LangChain's
+  buffer window memory) without a database: ONE session, ONE file, memory.json, in the bot's hidden Drive folder
+  (`google/drive.ts`, scope `drive.appdata`), shared by all agents: the last 20/50/100 question–answer pairs (owner's
+  choice, `OwnerSettings.m`), a new pair pushes out the oldest; plus facts the agents save with `remember_fact`. The
+  latest `SEND` pairs (12 h) go to the model as real chat turns (`conversationHistory`) with the rule not to redo what
+  was done (`conversationBlock`); each answer keeps the agent that gave it, so a reply to the bot's question goes back
+  to that agent (`pendingAgent`, 30 min). `delete_event` refuses unless the CURRENT message asks (`deletionAllowed`);
+  several / «all» only after «так». In JS regexes `\b` does not work next to Cyrillic letters. Loaded at the start of
+  an agent request, written after the answer. Without the Drive scope it stays in the instance.
 - Bursts of forwarded messages (`session.ts`): in memory, self-expiring; losing it may cost a duplicate, never data.
   Do not add a database or any other store.
 
